@@ -1,5 +1,6 @@
-use std::{env, path::Path, process, sync::Arc};
+use std::{env, fs, path::Path, process, sync::Arc, time::Instant};
 
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -9,9 +10,20 @@ use winit::{
     window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
 };
 
+/// Width of the border around the window contents within which the window gets
+/// resized instead of moved.
+const RESIZE_BORDER_WIDTH: f64 = 15.0;
+
+/// Size of the checkerboard pattern cells (in screen pixels).
+const CHECKERBOARD_CELL_SIZE: u32 = 10;
+
+const CHECKERBOARD_COLOR_A: f32 = 0.3;
+const CHECKERBOARD_COLOR_B: f32 = 0.6;
+
 fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .filter_module(env!("CARGO_CRATE_NAME"), log::LevelFilter::Debug)
+        .parse_default_env()
         .init();
 
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -24,13 +36,19 @@ fn main() -> anyhow::Result<()> {
     };
 
     log::info!("opening '{}'", path.display());
+    let kb = fs::metadata(path)?.len() / 1024;
+
+    let start = Instant::now();
     let image = image::open(path)?.into_rgba8();
     let aspect_ratio = image.width() as f32 / image.height() as f32;
     log::debug!(
-        "loaded {}x{} image (aspect ratio {})",
+        "loaded {}x{} image from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB)",
         image.width(),
         image.height(),
+        kb,
+        start.elapsed(),
         aspect_ratio,
+        (image.width() * image.height() * 4) / 1024,
     );
 
     let title = match path.file_name() {
@@ -56,8 +74,10 @@ struct Win {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+
+    /// The main render pipeline that displays the viewed image.
+    display_pipeline: wgpu::RenderPipeline,
+    display_bind_group: wgpu::BindGroup,
 }
 
 #[derive(Default)]
@@ -67,7 +87,7 @@ struct App {
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
-    cursor_pos: PhysicalPosition<f64>,
+    cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
     prev_size: PhysicalSize<u32>,
 }
@@ -78,8 +98,6 @@ enum CursorMode {
     Move,
     Resize(ResizeDirection),
 }
-
-const RESIZE_BORDER_WIDTH: f64 = 10.0;
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -101,7 +119,9 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::Resized(size) => {
-                log::debug!(
+                // When the window is resized, we force it to have the same aspect ratio as the
+                // image it is displaying.
+                log::trace!(
                     "resized from {}x{} to {}x{}",
                     self.prev_size.width,
                     self.prev_size.height,
@@ -144,10 +164,17 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                win.window.show_window_menu(self.cursor_pos);
+                if let Some(pos) = self.cursor_pos {
+                    win.window.show_window_menu(pos);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_pos = None;
+                win.window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = position;
+                self.cursor_pos = Some(position);
+                win.window.request_redraw();
 
                 let inner_size = win.window.inner_size().cast::<f64>();
                 let (n, e, s, w) = (
@@ -229,7 +256,7 @@ impl App {
         let adapter =
             pollster::block_on(self.instance.request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: Some(&surface),
-                power_preference: wgpu::PowerPreference::LowPower,
+                power_preference: wgpu::PowerPreference::LowPower, // no need to spin up a dGPU for this workload
                 ..Default::default()
             }));
 
@@ -237,7 +264,26 @@ impl App {
             eprintln!("could not open any compatible graphics device");
             process::exit(1);
         };
+        let info = adapter.get_info();
+        log::info!(
+            "using {} via {} ({}) [api={}]",
+            info.name,
+            info.driver,
+            info.driver_info,
+            info.backend,
+        );
         let surface_caps = surface.get_capabilities(&adapter);
+        log::debug!("supported surface formats: {:?}", surface_caps.formats);
+        log::debug!("supported present modes: {:?}", surface_caps.present_modes);
+        log::debug!("supported alpha modes: {:?}", surface_caps.alpha_modes);
+        let supports_alpha = surface_caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied);
+        if !supports_alpha {
+            log::info!(
+                "compositor does not support premultiplied alpha; transparent images will not work"
+            );
+        }
         let surface_format = *surface_caps
             .formats
             .get(0)
@@ -287,6 +333,41 @@ impl App {
             size,
         );
 
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
+        #[repr(C)]
+        struct DisplaySettings {
+            checkerboard_a: [f32; 4],
+            checkerboard_b: [f32; 4],
+            checkerboard_res: u32,
+            padding: [u32; 4],
+        }
+
+        let mut display_settings = DisplaySettings {
+            checkerboard_a: [
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                1.0,
+            ],
+            checkerboard_b: [
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                1.0,
+            ],
+            checkerboard_res: CHECKERBOARD_CELL_SIZE,
+            padding: [0; 4],
+        };
+        if supports_alpha {
+            display_settings.checkerboard_a = [0.0; 4];
+            display_settings.checkerboard_b = [0.0; 4];
+        }
+        let display_settings_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::bytes_of(&display_settings),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
@@ -306,9 +387,19 @@ impl App {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let display_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bgl,
             entries: &[
@@ -322,6 +413,12 @@ impl App {
                         &texture.create_view(&Default::default()),
                     ),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(
+                        display_settings_buffer.as_entire_buffer_binding(),
+                    ),
+                },
             ],
         });
 
@@ -329,7 +426,7 @@ impl App {
             label: None,
             source: wgpu::ShaderSource::Wgsl(include_str!("display.wgsl").into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let display_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -362,8 +459,8 @@ impl App {
             adapter,
             device,
             queue,
-            pipeline,
-            bind_group,
+            display_pipeline,
+            display_bind_group,
         };
         self.recreate_swapchain(&win);
         win
@@ -372,15 +469,26 @@ impl App {
     fn recreate_swapchain(&self, win: &Win) {
         let res = win.window.inner_size();
 
-        let config = win
+        let caps = win.surface.get_capabilities(&win.adapter);
+        let mut config = win
             .surface
             .get_default_config(&win.adapter, res.width, res.height)
             .expect("adapter does not support surface");
-        log::debug!(
-            "creating target surface at {}x{} (format: {:?})",
+
+        if caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+        }
+
+        log::trace!(
+            "creating target surface at {}x{} (format: {:?}, present mode: {:?}, alpha mode: {:?})",
             res.width,
             res.height,
             config.format,
+            config.present_mode,
+            config.alpha_mode,
         );
 
         win.surface.configure(&win.device, &config);
@@ -414,8 +522,8 @@ impl App {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&win.pipeline);
-        pass.set_bind_group(0, &win.bind_group, &[]);
+        pass.set_pipeline(&win.display_pipeline);
+        pass.set_bind_group(0, &win.display_bind_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
 

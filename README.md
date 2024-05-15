@@ -8,9 +8,11 @@ a funny little image viewer / overlay
 
 ### todo
 
+- scrolling while moving the window should change its size
 - mipmaps and SPD
 - allow marking a rectangle in the image to zoom into?
 - there are no good image diff viewers, this could become one
+- HDR question mark (I have no use for this, I neither have HDR images nor monitors)
 
 ### license
 
