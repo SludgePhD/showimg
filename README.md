@@ -2,9 +2,9 @@ a funny little image viewer / overlay
 
 ### controls
 
-press escape to exit
-left mouse button: move window, or resize it at its border
-right click: open the OS context menu for the window
+- press escape to exit
+- left mouse button: move window, or resize it at its border
+- right click: open the OS context menu for the window
 
 ### todo
 
