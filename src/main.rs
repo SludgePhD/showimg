@@ -293,13 +293,7 @@ impl App {
             .get(0)
             .expect("adapter cannot render to surface");
 
-        let res = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-                ..Default::default()
-            },
-            None,
-        ));
+        let res = pollster::block_on(adapter.request_device(&Default::default(), None));
         let (device, queue) = match res {
             Ok((dev, q)) => (dev, q),
             Err(e) => {
@@ -375,7 +369,7 @@ impl App {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        access: wgpu::StorageTextureAccess::WriteOnly,
                         format: output_format,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
