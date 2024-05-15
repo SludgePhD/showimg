@@ -1,6 +1,5 @@
-use std::{env, fs, path::Path, process, sync::Arc, time::Instant};
+use std::{env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -17,6 +16,13 @@ const RESIZE_BORDER_WIDTH: f64 = 15.0;
 /// Size of the checkerboard pattern cells (in screen pixels).
 const CHECKERBOARD_CELL_SIZE: u32 = 10;
 
+/// Hovering over the window while it is displaying a transparent image will display the
+/// checkerboard pattern with this alpha value.
+///
+/// Only does anything if the compositor supports premultiplied alpha windows.
+const CHECKERBOARD_HOVER_ALPHA: f32 = 0.2;
+
+// Gray levels for the 2 checkerboard squares.
 const CHECKERBOARD_COLOR_A: f32 = 0.3;
 const CHECKERBOARD_COLOR_B: f32 = 0.6;
 
@@ -69,6 +75,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 struct Win {
+    supports_alpha: bool,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
@@ -77,6 +84,7 @@ struct Win {
 
     /// The main render pipeline that displays the viewed image.
     display_pipeline: wgpu::RenderPipeline,
+    display_settings: wgpu::Buffer,
     display_bind_group: wgpu::BindGroup,
 }
 
@@ -333,39 +341,11 @@ impl App {
             size,
         );
 
-        #[derive(Clone, Copy, bytemuck::NoUninit)]
-        #[repr(C)]
-        struct DisplaySettings {
-            checkerboard_a: [f32; 4],
-            checkerboard_b: [f32; 4],
-            checkerboard_res: u32,
-            padding: [u32; 4],
-        }
-
-        let mut display_settings = DisplaySettings {
-            checkerboard_a: [
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                1.0,
-            ],
-            checkerboard_b: [
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                1.0,
-            ],
-            checkerboard_res: CHECKERBOARD_CELL_SIZE,
-            padding: [0; 4],
-        };
-        if supports_alpha {
-            display_settings.checkerboard_a = [0.0; 4];
-            display_settings.checkerboard_b = [0.0; 4];
-        }
-        let display_settings_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        let display_settings = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            contents: bytemuck::bytes_of(&display_settings),
-            usage: wgpu::BufferUsages::UNIFORM,
+            size: mem::size_of::<DisplaySettings>() as _,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -416,7 +396,7 @@ impl App {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Buffer(
-                        display_settings_buffer.as_entire_buffer_binding(),
+                        display_settings.as_entire_buffer_binding(),
                     ),
                 },
             ],
@@ -454,12 +434,14 @@ impl App {
         });
 
         let win = Win {
+            supports_alpha,
             window,
             surface,
             adapter,
             device,
             queue,
             display_pipeline,
+            display_settings,
             display_bind_group,
         };
         self.recreate_swapchain(&win);
@@ -510,6 +492,41 @@ impl App {
         };
         let view = st.texture.create_view(&Default::default());
 
+        let mut display_settings = DisplaySettings {
+            checkerboard_a: [
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                1.0,
+            ],
+            checkerboard_b: [
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                1.0,
+            ],
+            checkerboard_res: CHECKERBOARD_CELL_SIZE,
+            padding: Default::default(),
+        };
+        if win.supports_alpha {
+            if self.cursor_pos.is_some() {
+                // Partially transparent checkerboard while hovered.
+                let a = CHECKERBOARD_COLOR_A * CHECKERBOARD_HOVER_ALPHA;
+                let b = CHECKERBOARD_COLOR_B * CHECKERBOARD_HOVER_ALPHA;
+                display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
+                display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
+            } else {
+                // Fully transparent.
+                display_settings.checkerboard_a = [0.0; 4];
+                display_settings.checkerboard_b = [0.0; 4];
+            }
+        }
+        win.queue.write_buffer(
+            &win.display_settings,
+            0,
+            bytemuck::bytes_of(&display_settings),
+        );
+
         let mut enc = win.device.create_command_encoder(&Default::default());
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -528,6 +545,16 @@ impl App {
         drop(pass);
 
         win.queue.submit([enc.finish()]);
+        win.window.pre_present_notify();
         st.present();
     }
+}
+
+#[derive(Clone, Copy, bytemuck::NoUninit)]
+#[repr(C)]
+struct DisplaySettings {
+    checkerboard_a: [f32; 4],
+    checkerboard_b: [f32; 4],
+    checkerboard_res: u32,
+    padding: [u32; 3],
 }
