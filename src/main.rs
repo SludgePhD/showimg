@@ -267,6 +267,10 @@ impl ApplicationHandler for App {
                 }
                 _ => {}
             },
+            WindowEvent::CloseRequested => {
+                log::info!("external close request");
+                event_loop.exit();
+            }
             _ => {}
         }
     }
