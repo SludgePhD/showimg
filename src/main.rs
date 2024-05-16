@@ -50,14 +50,14 @@ fn main() -> anyhow::Result<()> {
 
     let start = Instant::now();
     let image = image::open(path)?.into_rgba8();
-    let aspect_ratio = image.width() as f32 / image.height() as f32;
+    let image_aspect_ratio = image.width() as f32 / image.height() as f32;
     log::debug!(
         "loaded {}x{} image from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB)",
         image.width(),
         image.height(),
         kb,
         start.elapsed(),
-        aspect_ratio,
+        image_aspect_ratio,
         (image.width() * image.height() * 4) / 1024,
     );
 
@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::builder().build()?;
 
     event_loop.run_app(&mut App {
-        aspect_ratio,
+        image_aspect_ratio,
         image,
         title: title.into(),
         ..App::default()
@@ -95,11 +95,14 @@ struct Win {
 
 #[derive(Default)]
 struct App {
-    aspect_ratio: f32,
+    image_aspect_ratio: f32, // full image aspect ratio; never changes
+    aspect_ratio: f32,       // selection aspect ratio
     image: image::RgbaImage,
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
+    min_uv: [f32; 2],
+    max_uv: [f32; 2],
     cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
 }
@@ -115,7 +118,10 @@ enum CursorMode {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            self.window = Some(self.create_window(event_loop));
+            let win = self.create_window(event_loop);
+            self.window = Some(win);
+
+            self.reset_region();
         }
     }
 
@@ -171,7 +177,16 @@ impl ApplicationHandler for App {
                     }
                 }
                 ElementState::Released => {
-                    // TODO: commit area selection, set and enforce new aspect ratio
+                    // Commit area selection, compute new aspect ratio, and enforce it.
+                    let (min, max) = self.selection_region(win);
+                    let range = [max[0] - min[0], max[1] - min[1]];
+                    if range[0] > 0.0 && range[1] > 0.0 {
+                        // Valid (ish?) range
+                        self.min_uv = min;
+                        self.max_uv = max;
+                        self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
+                    }
+
                     self.cursor_mode = CursorMode::Move;
                     win.window.set_cursor(CursorIcon::Move);
                     self.enforce_aspect_ratio(win);
@@ -237,14 +252,21 @@ impl ApplicationHandler for App {
                 event:
                     KeyEvent {
                         state: ElementState::Pressed,
-                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        physical_key: PhysicalKey::Code(code),
                         ..
                     },
                 ..
-            } => {
-                log::info!("escape pressed -> exiting");
-                event_loop.exit();
-            }
+            } => match code {
+                KeyCode::Escape => {
+                    log::info!("escape pressed -> exiting");
+                    event_loop.exit();
+                }
+                KeyCode::Backspace => {
+                    log::info!("backspace pressed -> resetting zoom region");
+                    self.reset_region();
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -274,17 +296,76 @@ impl App {
         win.window.request_redraw();
     }
 
+    fn reset_region(&mut self) {
+        let Some(win) = &self.window else { return };
+        if win.image_info.top == u32::MAX {
+            // Somehow not a single non-transparent pixel in the image? good luck finding the window, fucker
+            self.min_uv = [0.0, 0.0];
+            self.max_uv = [1.0, 1.0];
+            self.aspect_ratio = self.image_aspect_ratio;
+        } else {
+            self.min_uv = [
+                win.image_info.left as f32 / self.image.width() as f32,
+                win.image_info.top as f32 / self.image.height() as f32,
+            ];
+            self.max_uv = [
+                win.image_info.right as f32 / self.image.width() as f32,
+                win.image_info.bottom as f32 / self.image.height() as f32,
+            ];
+            let range = [
+                self.max_uv[0] - self.min_uv[0],
+                self.max_uv[1] - self.min_uv[1],
+            ];
+            // UVs always go from 0-1, so their "native" aspect ratio is 1.0.
+            self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
+        }
+
+        self.enforce_aspect_ratio(win);
+    }
+
     fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> [f32; 2] {
         let size = win.window.inner_size();
-        let u = coords.x / f64::from(size.width);
-        let v = coords.y / f64::from(size.height);
-        [u as f32, v as f32]
+        let mut u = (coords.x / f64::from(size.width)) as f32;
+        let mut v = (coords.y / f64::from(size.height)) as f32;
+
+        // Adjust the raw UVs to take `min_uv` and `max_uv` into account.
+        let u_range = self.max_uv[0] - self.min_uv[0];
+        let v_range = self.max_uv[1] - self.min_uv[1];
+        u = (u * u_range) + self.min_uv[0];
+        v = (v * v_range) + self.min_uv[1];
+
+        [u, v]
+    }
+
+    fn selection_region(&self, win: &Win) -> ([f32; 2], [f32; 2]) {
+        if let (CursorMode::Select(start), Some(end)) = (self.cursor_mode, self.cursor_pos) {
+            let start = self.window_to_uv(win, start);
+            let end = self.window_to_uv(win, end);
+
+            // sort corners
+            let min = [f32::min(start[0], end[0]), f32::min(start[1], end[1])];
+            let max = [f32::max(start[0], end[0]), f32::max(start[1], end[1])];
+
+            // clamp to visible area
+            let min = [
+                f32::max(min[0], self.min_uv[0]),
+                f32::max(min[1], self.min_uv[1]),
+            ];
+            let max = [
+                f32::min(max[0], self.max_uv[0]),
+                f32::min(max[1], self.max_uv[1]),
+            ];
+
+            (min, max)
+        } else {
+            Default::default()
+        }
     }
 
     fn display_settings(&self, win: &Win) -> DisplaySettings {
         let mut display_settings = DisplaySettings {
-            min_uv: [0.0, 0.0],
-            max_uv: [1.0, 1.0],
+            min_uv: self.min_uv,
+            max_uv: self.max_uv,
             min_selection: [0.0, 0.0],
             max_selection: [0.0, 0.0],
             selection_color: SELECTION_COLOR,
@@ -304,14 +385,9 @@ impl App {
             padding: Default::default(),
         };
 
-        if let (CursorMode::Select(start), Some(end)) = (self.cursor_mode, self.cursor_pos) {
-            let start = self.window_to_uv(win, start);
-            let end = self.window_to_uv(win, end);
-            let min = [f32::min(start[0], end[0]), f32::min(start[1], end[1])];
-            let max = [f32::max(start[0], end[0]), f32::max(start[1], end[1])];
-            display_settings.min_selection = min;
-            display_settings.max_selection = max;
-        }
+        let (min, max) = self.selection_region(win);
+        display_settings.min_selection = min;
+        display_settings.max_selection = max;
 
         if win.supports_alpha {
             if self.cursor_pos.is_some() {
