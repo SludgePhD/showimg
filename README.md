@@ -2,15 +2,16 @@ a funny little image viewer / overlay
 
 ### controls
 
-- press escape to exit
+- escape: close window
 - left mouse button: move window, or resize it at its border
 - right click: open the OS context menu for the window
+- middle click (hold): select a region to zoom into
+- backspace: reset zoom region
 
 ### todo
 
 - fix aspect-aware resize logic on X11
 - mipmaps and SPD
-- allow marking a rectangle in the image to zoom into?
 - there are no good image diff viewers, this could become one
 - HDR question mark (I have no use for this, I neither have HDR images nor monitors)
 
