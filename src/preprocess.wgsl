@@ -15,6 +15,12 @@ var<storage, read_write> info: ImageInfo;
 struct ImageInfo {
     uses_alpha: atomic<u32>, // 0 = no, 1 = yes
     known_straight: atomic<u32>, // 0 = possibly already premultiplied, 1 = definitely used straight alpha before preprocessing
+
+    // offsets into the actual image content (ie. non-transparent region)
+    top: atomic<u32>,
+    right: atomic<u32>,
+    bottom: atomic<u32>,
+    left: atomic<u32>,
 }
 
 @compute
@@ -34,6 +40,15 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3u) {
 
     // if any pixel's RGB values exceed the alpha value, the image is definitely using straight alpha
     atomicOr(&info.known_straight, u32(known_straight));
+
+    if any(pixel != vec4(0.0)) {
+        // if the pixel contains *any* color, it is part of the image content, so update its
+        // boundaries accordingly
+        atomicMin(&info.left, gid.x);
+        atomicMin(&info.top, gid.y);
+        atomicMax(&info.right, gid.x);
+        atomicMax(&info.bottom, gid.y);
+    }
 
     var out = vec4(pixel.rgb * pixel.a, pixel.a);
     textureStore(output, gid.xy, out);

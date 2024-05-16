@@ -1,6 +1,6 @@
 use std::{env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
-use wgpu::util::DownloadBuffer;
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -400,11 +400,17 @@ impl App {
             entry_point: "preprocess",
             compilation_options: Default::default(),
         });
-        let image_info = device.create_buffer(&wgpu::BufferDescriptor {
+        let image_info = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
-            size: mem::size_of::<ImageInfo>() as _,
+            contents: bytemuck::bytes_of(&ImageInfo {
+                uses_alpha: 0,
+                known_straight: 0,
+                top: u32::MAX,
+                right: 0,
+                bottom: 0,
+                left: u32::MAX,
+            }),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -437,24 +443,37 @@ impl App {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         drop(pass);
-        let submission = queue.submit([enc.finish()]);
-        DownloadBuffer::read_buffer(&device, &queue, &image_info.slice(..), move |res| {
-            let buffer = res.unwrap();
-            let info: ImageInfo = *bytemuck::from_bytes(&buffer);
 
-            if info.uses_alpha() && !supports_alpha {
-                log::warn!(
-                    "compositor does not support premultiplied alpha; using checkerboard background"
-                );
-            }
-            if info.uses_alpha() && !info.known_straight() {
-                log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
-            }
+        // Download the computed image info.
+        let image_info_dl = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: image_info.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
+        enc.copy_buffer_to_buffer(&image_info, 0, &image_info_dl, 0, image_info.size());
+
+        let idx = queue.submit([enc.finish()]);
+
+        image_info_dl
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, Result::unwrap);
         device
-            .poll(wgpu::Maintain::wait_for(submission))
+            .poll(wgpu::Maintain::wait_for(idx))
             .panic_on_timeout();
 
+        let info: ImageInfo = *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
+
+        if info.uses_alpha() && !supports_alpha {
+            log::warn!(
+                "compositor does not support premultiplied alpha; using checkerboard background"
+            );
+        }
+        if info.uses_alpha() && !info.known_straight() {
+            log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
+        }
+
+        // Create the resources used for displaying the image.
         let display_settings = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: mem::size_of::<DisplaySettings>() as _,
@@ -672,11 +691,15 @@ struct DisplaySettings {
     padding: [u32; 3],
 }
 
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct ImageInfo {
     uses_alpha: u32,
     known_straight: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+    left: u32,
 }
 
 impl ImageInfo {

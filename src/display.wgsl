@@ -13,22 +13,22 @@ struct DisplaySettings {
 
 struct VertexOutput {
     @builtin(position)
-    position: vec4<f32>,
+    position: vec4f,
     @location(0)
-    uv: vec2<f32>,
+    uv: vec2f,
 };
 
 @vertex
 fn vert(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // Logic copied from bevy's fullscreen quad shader
     var out: VertexOutput;
-    out.uv = vec2<f32>(f32(vertex_index >> 1u), f32(vertex_index & 1u)) * 2.0;
-    out.position = vec4<f32>(out.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    out.uv = vec2f(f32(vertex_index >> 1), f32(vertex_index & 1)) * 2.0;
+    out.position = vec4f(out.uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
     return out;
 }
 
 @fragment
-fn frag(in: VertexOutput) -> @location(0) vec4<f32> {
+fn frag(in: VertexOutput) -> @location(0) vec4f {
     let src = textureSample(in_texture, in_sampler, in.uv);
 
     // do a pre-multiplied alpha blend with the checkerboard colors
