@@ -8,6 +8,7 @@ a funny little image viewer / overlay
 
 ### todo
 
+- fix aspect-aware resize logic on X11
 - mipmaps and SPD
 - allow marking a rectangle in the image to zoom into?
 - there are no good image diff viewers, this could become one

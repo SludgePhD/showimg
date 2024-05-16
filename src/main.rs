@@ -1,5 +1,6 @@
 use std::{env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use winit::{
     application::ApplicationHandler,
@@ -20,12 +21,14 @@ const CHECKERBOARD_CELL_SIZE: u32 = 10;
 /// Hovering over the window while it is displaying a transparent image will display the
 /// checkerboard pattern with this alpha value.
 ///
-/// Only does anything if the compositor supports premultiplied alpha windows.
+/// Only does anything if the compositor supports compositing client surfaces that use premultiplied
+/// alpha.
 const CHECKERBOARD_HOVER_ALPHA: f32 = 0.2;
 
 // Gray levels for the 2 checkerboard squares.
 const CHECKERBOARD_COLOR_A: f32 = 0.3;
 const CHECKERBOARD_COLOR_B: f32 = 0.6;
+const SELECTION_COLOR: [f32; 4] = [0.2, 0.5, 0.5, 0.1];
 
 fn main() -> anyhow::Result<()> {
     env_logger::builder()
@@ -77,6 +80,7 @@ fn main() -> anyhow::Result<()> {
 
 struct Win {
     supports_alpha: bool,
+    image_info: ImageInfo,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
@@ -98,14 +102,14 @@ struct App {
     window: Option<Win>,
     cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
-    prev_size: PhysicalSize<u32>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 enum CursorMode {
     #[default]
     Move,
     Resize(ResizeDirection),
+    Select(PhysicalPosition<f64>),
 }
 
 impl ApplicationHandler for App {
@@ -130,23 +134,9 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 // When the window is resized, we force it to have the same aspect ratio as the
                 // image it is displaying.
-                log::trace!(
-                    "resized from {}x{} to {}x{}",
-                    self.prev_size.width,
-                    self.prev_size.height,
-                    size.width,
-                    size.height,
-                );
+                log::trace!("resized to {}x{}", size.width, size.height);
 
-                let ideal_size = if self.prev_size.height != size.height {
-                    PhysicalSize::new((size.height as f32 * self.aspect_ratio) as u32, size.height)
-                } else {
-                    PhysicalSize::new(size.width, (size.width as f32 / self.aspect_ratio) as u32)
-                };
-
-                let _ = win.window.request_inner_size(ideal_size);
-                self.recreate_swapchain(win);
-                win.window.request_redraw();
+                self.enforce_aspect_ratio(win);
             }
             WindowEvent::RedrawRequested => {
                 self.redraw(win);
@@ -162,10 +152,30 @@ impl ApplicationHandler for App {
                     }
                 }
                 CursorMode::Resize(dir) => {
-                    self.prev_size = win.window.inner_size();
                     if let Err(e) = win.window.drag_resize_window(dir) {
                         log::error!("failed to initiate window resize: {e}");
                     }
+                }
+                CursorMode::Select(_) => {}
+            },
+            WindowEvent::MouseInput {
+                button: MouseButton::Middle,
+                state,
+                ..
+            } => match state {
+                ElementState::Pressed => {
+                    if let Some(pos) = self.cursor_pos {
+                        self.cursor_mode = CursorMode::Select(pos);
+                        win.window.set_cursor(CursorIcon::Crosshair);
+                        win.window.request_redraw();
+                    }
+                }
+                ElementState::Released => {
+                    // TODO: commit area selection, set and enforce new aspect ratio
+                    self.cursor_mode = CursorMode::Move;
+                    win.window.set_cursor(CursorIcon::Move);
+                    self.enforce_aspect_ratio(win);
+                    win.window.request_redraw();
                 }
             },
             WindowEvent::MouseInput {
@@ -184,6 +194,11 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = Some(position);
                 win.window.request_redraw();
+
+                if let CursorMode::Select(_) = self.cursor_mode {
+                    // We're already doing something, don't change to move/resize mode.
+                    return;
+                }
 
                 let inner_size = win.window.inner_size().cast::<f64>();
                 let (n, e, s, w) = (
@@ -215,6 +230,7 @@ impl ApplicationHandler for App {
                 match self.cursor_mode {
                     CursorMode::Move => win.window.set_cursor(CursorIcon::Move),
                     CursorMode::Resize(dir) => win.window.set_cursor(CursorIcon::from(dir)),
+                    _ => {}
                 }
             }
             WindowEvent::KeyboardInput {
@@ -235,6 +251,85 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    // FIXME: does not work in X11, try getting rid of `drag_resize_window`
+    fn enforce_aspect_ratio(&self, win: &Win) {
+        let size = win.window.inner_size(); // the externally requested size
+
+        // We use the `CursorMode` as a hint – if we're resizing vertically, respect the requested
+        // height, if we're resizing horizontally, respect the requested width.
+        let is_vertical = matches!(
+            self.cursor_mode,
+            CursorMode::Resize(ResizeDirection::North | ResizeDirection::South)
+        );
+        let ideal_size = if is_vertical {
+            PhysicalSize::new((size.height as f32 * self.aspect_ratio) as u32, size.height)
+        } else {
+            PhysicalSize::new(size.width, (size.width as f32 / self.aspect_ratio) as u32)
+        };
+
+        if ideal_size != size {
+            let _ = win.window.request_inner_size(ideal_size);
+        }
+        self.recreate_swapchain(win);
+        win.window.request_redraw();
+    }
+
+    fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> [f32; 2] {
+        let size = win.window.inner_size();
+        let u = coords.x / f64::from(size.width);
+        let v = coords.y / f64::from(size.height);
+        [u as f32, v as f32]
+    }
+
+    fn display_settings(&self, win: &Win) -> DisplaySettings {
+        let mut display_settings = DisplaySettings {
+            min_uv: [0.0, 0.0],
+            max_uv: [1.0, 1.0],
+            min_selection: [0.0, 0.0],
+            max_selection: [0.0, 0.0],
+            selection_color: SELECTION_COLOR,
+            checkerboard_a: [
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                CHECKERBOARD_COLOR_A,
+                1.0,
+            ],
+            checkerboard_b: [
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                CHECKERBOARD_COLOR_B,
+                1.0,
+            ],
+            checkerboard_res: CHECKERBOARD_CELL_SIZE,
+            padding: Default::default(),
+        };
+
+        if let (CursorMode::Select(start), Some(end)) = (self.cursor_mode, self.cursor_pos) {
+            let start = self.window_to_uv(win, start);
+            let end = self.window_to_uv(win, end);
+            let min = [f32::min(start[0], end[0]), f32::min(start[1], end[1])];
+            let max = [f32::max(start[0], end[0]), f32::max(start[1], end[1])];
+            display_settings.min_selection = min;
+            display_settings.max_selection = max;
+        }
+
+        if win.supports_alpha {
+            if self.cursor_pos.is_some() {
+                // Partially transparent checkerboard while hovered.
+                let a = CHECKERBOARD_COLOR_A * CHECKERBOARD_HOVER_ALPHA;
+                let b = CHECKERBOARD_COLOR_B * CHECKERBOARD_HOVER_ALPHA;
+                display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
+                display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
+            } else {
+                // Fully transparent.
+                display_settings.checkerboard_a = [0.0; 4];
+                display_settings.checkerboard_b = [0.0; 4];
+            }
+        }
+
+        display_settings
+    }
+
     fn create_window(&self, event_loop: &ActiveEventLoop) -> Win {
         // Create Window.
         let app_name = env!("CARGO_PKG_NAME");
@@ -243,7 +338,7 @@ impl App {
                 .with_title(format!("{} – {app_name}", self.title))
                 .with_transparent(true)
                 .with_decorations(false)
-                .with_window_level(WindowLevel::AlwaysOnTop),
+                .with_window_level(WindowLevel::AlwaysOnTop), // NB: doesn't work on Wayland
         );
         let window = match res {
             Ok(win) => Arc::new(win),
@@ -252,6 +347,32 @@ impl App {
                 process::exit(1);
             }
         };
+
+        // Log backend info.
+        match window.window_handle() {
+            Ok(h) => {
+                let api = match h.as_raw() {
+                    RawWindowHandle::UiKit(_) => "UIKit",
+                    RawWindowHandle::AppKit(_) => "AppKit",
+                    RawWindowHandle::Orbital(_) => "Orbital",
+                    RawWindowHandle::Xlib(_) => "Xlib",
+                    RawWindowHandle::Xcb(_) => "Xcb",
+                    RawWindowHandle::Wayland(_) => "Wayland",
+                    RawWindowHandle::Drm(_) => "DRM",
+                    RawWindowHandle::Gbm(_) => "GBM",
+                    RawWindowHandle::Win32(_) => "Win32",
+                    RawWindowHandle::WinRt(_) => "WinRT",
+                    RawWindowHandle::Web(_) => "Web",
+                    RawWindowHandle::WebCanvas(_) => "WebCanvas",
+                    RawWindowHandle::WebOffscreenCanvas(_) => "OffscreenCanvas",
+                    RawWindowHandle::AndroidNdk(_) => "NDK",
+                    RawWindowHandle::Haiku(_) => "Haiku",
+                    _ => "<unknown>",
+                };
+                log::info!("using windowing API: {api}");
+            }
+            Err(e) => log::warn!("couldn't obtain window handle: {e}"),
+        }
 
         let surface = match self.instance.create_surface(window.clone()) {
             Ok(surface) => surface,
@@ -402,14 +523,7 @@ impl App {
         });
         let image_info = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
-            contents: bytemuck::bytes_of(&ImageInfo {
-                uses_alpha: 0,
-                known_straight: 0,
-                top: u32::MAX,
-                right: 0,
-                bottom: 0,
-                left: u32::MAX,
-            }),
+            contents: bytemuck::bytes_of(&ImageInfo::default()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -462,14 +576,15 @@ impl App {
             .poll(wgpu::Maintain::wait_for(idx))
             .panic_on_timeout();
 
-        let info: ImageInfo = *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
+        let image_info: ImageInfo =
+            *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
 
-        if info.uses_alpha() && !supports_alpha {
+        if image_info.uses_alpha() && !supports_alpha {
             log::warn!(
                 "compositor does not support premultiplied alpha; using checkerboard background"
             );
         }
-        if info.uses_alpha() && !info.known_straight() {
+        if image_info.uses_alpha() && !image_info.known_straight() {
             log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
         }
 
@@ -570,6 +685,7 @@ impl App {
 
         let win = Win {
             supports_alpha,
+            image_info,
             window,
             surface,
             adapter,
@@ -627,37 +743,7 @@ impl App {
         };
         let view = st.texture.create_view(&Default::default());
 
-        let mut display_settings = DisplaySettings {
-            min_uv: [0.0, 0.0],
-            max_uv: [1.0, 1.0],
-            checkerboard_a: [
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                1.0,
-            ],
-            checkerboard_b: [
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                1.0,
-            ],
-            checkerboard_res: CHECKERBOARD_CELL_SIZE,
-            padding: Default::default(),
-        };
-        if win.supports_alpha {
-            if self.cursor_pos.is_some() {
-                // Partially transparent checkerboard while hovered.
-                let a = CHECKERBOARD_COLOR_A * CHECKERBOARD_HOVER_ALPHA;
-                let b = CHECKERBOARD_COLOR_B * CHECKERBOARD_HOVER_ALPHA;
-                display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
-                display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
-            } else {
-                // Fully transparent.
-                display_settings.checkerboard_a = [0.0; 4];
-                display_settings.checkerboard_b = [0.0; 4];
-            }
-        }
+        let display_settings = self.display_settings(win);
         win.queue.write_buffer(
             &win.display_settings,
             0,
@@ -692,6 +778,9 @@ impl App {
 struct DisplaySettings {
     min_uv: [f32; 2],
     max_uv: [f32; 2],
+    min_selection: [f32; 2],
+    max_selection: [f32; 2],
+    selection_color: [f32; 4],
     checkerboard_a: [f32; 4],
     checkerboard_b: [f32; 4],
     checkerboard_res: u32,
@@ -703,10 +792,24 @@ struct DisplaySettings {
 struct ImageInfo {
     uses_alpha: u32,
     known_straight: u32,
+    // X/Y pixel coordinates where the image's content begins
     top: u32,
     right: u32,
     bottom: u32,
     left: u32,
+}
+
+impl Default for ImageInfo {
+    fn default() -> Self {
+        Self {
+            uses_alpha: 0,
+            known_straight: 0,
+            top: u32::MAX,
+            right: 0,
+            bottom: 0,
+            left: u32::MAX,
+        }
+    }
 }
 
 impl ImageInfo {

@@ -8,6 +8,9 @@ var<uniform> display_settings: DisplaySettings;
 struct DisplaySettings {
     min_uv: vec2f,
     max_uv: vec2f,
+    min_selection: vec2f,
+    max_selection: vec2f,
+    selection_color: vec4f,
     checkerboard_a: vec4f,
     checkerboard_b: vec4f,
     checkerboard_res: u32,
@@ -42,12 +45,21 @@ fn vertex(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4f {
-    let src = textureSample(in_texture, in_sampler, in.uv);
+    let tex_color = textureSample(in_texture, in_sampler, in.uv);
 
     // do a pre-multiplied alpha blend with the checkerboard colors
     let checkervec = vec2u(in.position.xy) / display_settings.checkerboard_res % 2; // even/odd in x/y dir
     let check = checkervec.x != checkervec.y;  // parity
-    let dest = select(display_settings.checkerboard_a, display_settings.checkerboard_b, check);
+    var dest = select(display_settings.checkerboard_a, display_settings.checkerboard_b, check);
 
-    return src + ((1 - src.a) * dest);
+    dest = tex_color + (1 - tex_color.a) * dest;
+
+    let in_selection = all(in.uv >= display_settings.min_selection) && all(in.uv < display_settings.max_selection);
+    if in_selection {
+        // blend the selection color on top
+        let col = display_settings.selection_color;
+        dest = col + (1 - col.a) * dest;
+    }
+
+    return dest;
 }
