@@ -1,4 +1,4 @@
-a funny little image viewer / overlay
+**showimg** is a funny little image viewer / overlay
 
 ### controls
 
@@ -17,4 +17,4 @@ a funny little image viewer / overlay
 
 ### license
 
-https://github.com/SludgePhD/viewimg/assets/96552222/b4effa1e-212d-4a29-acb8-60ab68db1bf0
+https://github.com/SludgePhD/showimg/assets/96552222/b4effa1e-212d-4a29-acb8-60ab68db1bf0

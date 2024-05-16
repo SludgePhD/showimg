@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     let path = match &*args {
         [path] if path != "--help" => Path::new(path),
         _ => {
-            eprintln!("usage: viewimg <path>");
+            eprintln!("usage: showimg <path>");
             process::exit(1);
         }
     };
