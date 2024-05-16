@@ -6,6 +6,8 @@ var in_texture: texture_2d<f32>;
 var<uniform> display_settings: DisplaySettings;
 
 struct DisplaySettings {
+    min_uv: vec2f,
+    max_uv: vec2f,
     checkerboard_a: vec4f,
     checkerboard_b: vec4f,
     checkerboard_res: u32,
@@ -18,17 +20,28 @@ struct VertexOutput {
     uv: vec2f,
 };
 
+const VERTICES = array(
+    //            pos             uvs
+    array(vec2(-1.0,  1.0), vec2(0.0, 0.0)), // top left
+    array(vec2( 1.0,  1.0), vec2(1.0, 0.0)), // top right
+    array(vec2(-1.0, -1.0), vec2(0.0, 1.0)), // bottom left
+    array(vec2( 1.0, -1.0), vec2(1.0, 1.0)), // bottom right
+);
+
 @vertex
-fn vert(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // Logic copied from bevy's fullscreen quad shader
+fn vertex(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var verts = VERTICES; // needed for indexing with a variable; might be a naga limitation?
+
     var out: VertexOutput;
-    out.uv = vec2f(f32(vertex_index >> 1), f32(vertex_index & 1)) * 2.0;
-    out.position = vec4f(out.uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
+    out.position = vec4f(verts[vertex_index][0], 0.0, 1.0);
+    out.uv = verts[vertex_index][1];
+    out.uv = clamp(out.uv, display_settings.min_uv, display_settings.max_uv);
+
     return out;
 }
 
 @fragment
-fn frag(in: VertexOutput) -> @location(0) vec4f {
+fn fragment(in: VertexOutput) -> @location(0) vec4f {
     let src = textureSample(in_texture, in_sampler, in.uv);
 
     // do a pre-multiplied alpha blend with the checkerboard colors

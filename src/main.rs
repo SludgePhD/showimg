@@ -501,7 +501,7 @@ impl App {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -549,16 +549,19 @@ impl App {
             ),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vert",
+                entry_point: "vertex",
                 compilation_options: Default::default(),
                 buffers: &[],
             },
-            primitive: Default::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
             depth_stencil: None,
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "frag",
+                entry_point: "fragment",
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState::from(surface_format))],
             }),
@@ -625,6 +628,8 @@ impl App {
         let view = st.texture.create_view(&Default::default());
 
         let mut display_settings = DisplaySettings {
+            min_uv: [0.0, 0.0],
+            max_uv: [1.0, 1.0],
             checkerboard_a: [
                 CHECKERBOARD_COLOR_A,
                 CHECKERBOARD_COLOR_A,
@@ -673,7 +678,7 @@ impl App {
         });
         pass.set_pipeline(&win.display_pipeline);
         pass.set_bind_group(0, &win.display_bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        pass.draw(0..4, 0..1);
         drop(pass);
 
         win.queue.submit([enc.finish()]);
@@ -685,6 +690,8 @@ impl App {
 #[derive(Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 struct DisplaySettings {
+    min_uv: [f32; 2],
+    max_uv: [f32; 2],
     checkerboard_a: [f32; 4],
     checkerboard_b: [f32; 4],
     checkerboard_res: u32,
