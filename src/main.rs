@@ -141,8 +141,7 @@ impl ApplicationHandler for App {
                 // When the window is resized, we force it to have the same aspect ratio as the
                 // image it is displaying.
                 log::trace!("resized to {}x{}", size.width, size.height);
-
-                self.enforce_aspect_ratio(win);
+                self.enforce_aspect_ratio(win, size);
             }
             WindowEvent::RedrawRequested => {
                 self.redraw(win);
@@ -189,7 +188,7 @@ impl ApplicationHandler for App {
 
                     self.cursor_mode = CursorMode::Move;
                     win.window.set_cursor(CursorIcon::Move);
-                    self.enforce_aspect_ratio(win);
+                    self.enforce_aspect_ratio(win, win.window.inner_size());
                     win.window.request_redraw();
                 }
             },
@@ -278,23 +277,28 @@ impl ApplicationHandler for App {
 
 impl App {
     // FIXME: does not work in X11, try getting rid of `drag_resize_window`
-    fn enforce_aspect_ratio(&self, win: &Win) {
-        let size = win.window.inner_size(); // the externally requested size
-
+    fn enforce_aspect_ratio(&self, win: &Win, size: PhysicalSize<u32>) {
         // We use the `CursorMode` as a hint – if we're resizing vertically, respect the requested
         // height, if we're resizing horizontally, respect the requested width.
         let is_vertical = matches!(
             self.cursor_mode,
             CursorMode::Resize(ResizeDirection::North | ResizeDirection::South)
         );
-        let ideal_size = if is_vertical {
+        let fitted_size = if is_vertical {
             PhysicalSize::new((size.height as f32 * self.aspect_ratio) as u32, size.height)
         } else {
             PhysicalSize::new(size.width, (size.width as f32 / self.aspect_ratio) as u32)
         };
+        log::trace!(
+            "enforce_aspect_ratio: requested {}x{}, fitted size {}x{} (vertical={is_vertical})",
+            size.width,
+            size.height,
+            fitted_size.width,
+            fitted_size.height,
+        );
 
-        if ideal_size != size {
-            let _ = win.window.request_inner_size(ideal_size);
+        if fitted_size != size {
+            let _ = win.window.request_inner_size(fitted_size);
         }
         self.recreate_swapchain(win);
         win.window.request_redraw();
@@ -324,7 +328,7 @@ impl App {
             self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
         }
 
-        self.enforce_aspect_ratio(win);
+        self.enforce_aspect_ratio(win, win.window.inner_size());
     }
 
     fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> [f32; 2] {
