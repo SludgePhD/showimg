@@ -184,6 +184,20 @@ impl ApplicationHandler for App {
                         self.min_uv = min;
                         self.max_uv = max;
                         self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
+
+                        // Also downsize the window, since this is largely intended to be a cropping tool.
+                        if let (CursorMode::Select(start), Some(end)) =
+                            (self.cursor_mode, self.cursor_pos)
+                        {
+                            // sort corners
+                            let min = [f64::min(start.x, end.x), f64::min(start.y, end.y)];
+                            let max = [f64::max(start.x, end.x), f64::max(start.y, end.y)];
+                            let size = [max[0] - min[0], max[1] - min[1]];
+                            let _ = win.window.request_inner_size(PhysicalSize::new(
+                                size[0] as u32,
+                                size[1] as u32,
+                            ));
+                        }
                     }
 
                     self.cursor_mode = CursorMode::Move;
