@@ -1,4 +1,4 @@
-use std::{env, fs, mem, path::Path, process, sync::Arc, time::Instant};
+use std::{cmp, env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
@@ -10,6 +10,9 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
 };
+
+const MAX_WIDTH: u32 = 1280;
+const MAX_HEIGHT: u32 = 720;
 
 /// Width of the border around the window contents within which the window gets
 /// resized instead of moved.
@@ -429,10 +432,37 @@ impl App {
     }
 
     fn create_window(&self, event_loop: &ActiveEventLoop) -> Win {
+        // Compute initial window size; fit aspect ratio.
+        let s1 = PhysicalSize::new(
+            (MAX_HEIGHT as f32 * self.image_aspect_ratio) as u32,
+            MAX_HEIGHT,
+        );
+        let s2 = PhysicalSize::new(
+            MAX_WIDTH,
+            (MAX_WIDTH as f32 / self.image_aspect_ratio) as u32,
+        );
+        let fit_size = if s1.width > MAX_WIDTH || s1.height > MAX_HEIGHT {
+            s2
+        } else {
+            s1
+        };
+
+        let mut size = fit_size;
+        size.width = cmp::min(size.width, self.image.width());
+        size.height = cmp::min(size.height, self.image.height());
+        log::debug!(
+            "window size: fit={}x{}, clamped={}x{}",
+            fit_size.width,
+            fit_size.height,
+            size.width,
+            size.height,
+        );
+
         // Create Window.
         let app_name = env!("CARGO_PKG_NAME");
         let res = event_loop.create_window(
             Window::default_attributes()
+                .with_inner_size(size)
                 .with_title(format!("{} – {app_name}", self.title))
                 .with_transparent(true)
                 .with_decorations(false)

@@ -12,6 +12,7 @@
 
 - fix aspect-aware resize logic on X11
 - mipmaps and SPD
+- animations
 - there are no good image diff viewers, this could become one
 - HDR question mark (I have no use for this, I neither have HDR images nor monitors)
 
