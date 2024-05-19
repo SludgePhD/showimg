@@ -28,9 +28,12 @@ const CHECKERBOARD_CELL_SIZE: u32 = 10;
 /// alpha.
 const CHECKERBOARD_HOVER_ALPHA: f32 = 0.2;
 
-// Gray levels for the 2 checkerboard squares.
-const CHECKERBOARD_COLOR_A: f32 = 0.3;
-const CHECKERBOARD_COLOR_B: f32 = 0.6;
+// Gray levels for the 2 checkerboard squares. Linear luminance.
+const CHECKERBOARD_LIGHT_A: f32 = 0.75;
+const CHECKERBOARD_LIGHT_B: f32 = 0.95;
+const CHECKERBOARD_DARK_A: f32 = 0.01;
+const CHECKERBOARD_DARK_B: f32 = 0.06;
+
 const SELECTION_COLOR: [f32; 4] = [0.2, 0.5, 0.5, 0.1];
 
 fn main() -> anyhow::Result<()> {
@@ -108,6 +111,7 @@ struct App {
     max_uv: [f32; 2],
     cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
+    transparency: TransparencyMode,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -118,10 +122,21 @@ enum CursorMode {
     Select(PhysicalPosition<f64>),
 }
 
+#[derive(Default, Clone, Copy, PartialEq)]
+enum TransparencyMode {
+    #[default]
+    TrueTransparency,
+    LightCheckerboard,
+    DarkCheckerboard,
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let win = self.create_window(event_loop);
+            if !win.supports_alpha {
+                self.transparency = TransparencyMode::LightCheckerboard;
+            }
             self.window = Some(win);
 
             self.reset_region();
@@ -281,6 +296,20 @@ impl ApplicationHandler for App {
                     log::info!("backspace pressed -> resetting zoom region");
                     self.reset_region();
                 }
+                KeyCode::KeyT => {
+                    self.transparency = match self.transparency {
+                        TransparencyMode::TrueTransparency => TransparencyMode::LightCheckerboard,
+                        TransparencyMode::LightCheckerboard => TransparencyMode::DarkCheckerboard,
+                        TransparencyMode::DarkCheckerboard => {
+                            if win.supports_alpha {
+                                TransparencyMode::TrueTransparency
+                            } else {
+                                TransparencyMode::LightCheckerboard
+                            }
+                        }
+                    };
+                    win.window.request_redraw();
+                }
                 _ => {}
             },
             WindowEvent::CloseRequested => {
@@ -394,18 +423,8 @@ impl App {
             min_selection: [0.0, 0.0],
             max_selection: [0.0, 0.0],
             selection_color: SELECTION_COLOR,
-            checkerboard_a: [
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                CHECKERBOARD_COLOR_A,
-                1.0,
-            ],
-            checkerboard_b: [
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                CHECKERBOARD_COLOR_B,
-                1.0,
-            ],
+            checkerboard_a: [0.0; 4],
+            checkerboard_b: [0.0; 4],
             checkerboard_res: CHECKERBOARD_CELL_SIZE,
             padding: Default::default(),
         };
@@ -414,17 +433,31 @@ impl App {
         display_settings.min_selection = min;
         display_settings.max_selection = max;
 
-        if win.supports_alpha {
-            if self.cursor_pos.is_some() {
-                // Partially transparent checkerboard while hovered.
-                let a = CHECKERBOARD_COLOR_A * CHECKERBOARD_HOVER_ALPHA;
-                let b = CHECKERBOARD_COLOR_B * CHECKERBOARD_HOVER_ALPHA;
-                display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
-                display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
-            } else {
-                // Fully transparent.
-                display_settings.checkerboard_a = [0.0; 4];
-                display_settings.checkerboard_b = [0.0; 4];
+        match self.transparency {
+            TransparencyMode::TrueTransparency => {
+                if self.cursor_pos.is_some() {
+                    // Partially transparent checkerboard while hovered.
+                    let a = CHECKERBOARD_LIGHT_A * CHECKERBOARD_HOVER_ALPHA;
+                    let b = CHECKERBOARD_LIGHT_B * CHECKERBOARD_HOVER_ALPHA;
+                    display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
+                    display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
+                } else {
+                    // Fully transparent.
+                    display_settings.checkerboard_a = [0.0; 4];
+                    display_settings.checkerboard_b = [0.0; 4];
+                }
+            }
+            TransparencyMode::LightCheckerboard => {
+                let a = CHECKERBOARD_LIGHT_A;
+                let b = CHECKERBOARD_LIGHT_B;
+                display_settings.checkerboard_a = [a, a, a, 1.0];
+                display_settings.checkerboard_b = [b, b, b, 1.0];
+            }
+            TransparencyMode::DarkCheckerboard => {
+                let a = CHECKERBOARD_DARK_A;
+                let b = CHECKERBOARD_DARK_B;
+                display_settings.checkerboard_a = [a, a, a, 1.0];
+                display_settings.checkerboard_b = [b, b, b, 1.0];
             }
         }
 
