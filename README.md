@@ -1,5 +1,8 @@
 **showimg** is a funny little image viewer / overlay
 
+It displays images without any window decorations and makes them stay on top of
+other windows.
+
 ### controls
 
 - escape: close window
@@ -11,10 +14,10 @@
 
 ### todo
 
+- `rfd` for showing error messages (instead of just showing nothing on load errors)
 - fix aspect-aware window resize logic on X11
 - mipmaps and SPD
 - animations
-- there are no good image diff viewers, this could become one
 - HDR question mark (I have no use for this, I neither have HDR images nor monitors)
 
 ### license

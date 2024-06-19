@@ -1,3 +1,5 @@
+mod ratio;
+
 use std::{cmp, env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -343,6 +345,8 @@ impl App {
             fitted_size.height,
         );
 
+        ratio::enforce(&win.window, self.aspect_ratio, size);
+
         if fitted_size != size {
             let _ = win.window.request_inner_size(fitted_size);
         }
@@ -378,9 +382,9 @@ impl App {
     }
 
     fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> [f32; 2] {
-        let size = win.window.inner_size();
-        let mut u = (coords.x / f64::from(size.width)) as f32;
-        let mut v = (coords.y / f64::from(size.height)) as f32;
+        let (min, max) = self.fb_coord_range(win);
+        let mut u = (coords.x as f32 - min[0]) / (max[0] - min[0]);
+        let mut v = (coords.y as f32 - min[1]) / (max[1] - min[1]);
 
         // Adjust the raw UVs to take `min_uv` and `max_uv` into account.
         let u_range = self.max_uv[0] - self.min_uv[0];
@@ -416,8 +420,31 @@ impl App {
         }
     }
 
+    fn fb_coord_range(&self, win: &Win) -> ([f32; 2], [f32; 2]) {
+        let size = win.window.inner_size();
+        let to_aspect = size.width as f32 / size.height as f32;
+        let (y_min, x_min, w, h);
+        if self.aspect_ratio > to_aspect {
+            w = size.width as f32;
+            h = size.width as f32 / self.aspect_ratio;
+
+            x_min = 0.0;
+            y_min = (size.height as f32 - h) / 2.0;
+        } else {
+            w = size.height as f32 * self.aspect_ratio;
+            h = size.height as f32;
+
+            x_min = (size.width as f32 - w) / 2.0;
+            y_min = 0.0;
+        }
+
+        ([x_min, y_min], [x_min + w, y_min + h])
+    }
+
     fn display_settings(&self, win: &Win) -> DisplaySettings {
         let mut display_settings = DisplaySettings {
+            min_fb: [0.0, 0.0],
+            max_fb: [0.0, 0.0],
             min_uv: self.min_uv,
             max_uv: self.max_uv,
             min_selection: [0.0, 0.0],
@@ -428,6 +455,11 @@ impl App {
             checkerboard_res: CHECKERBOARD_CELL_SIZE,
             padding: Default::default(),
         };
+
+        let (min, max) = self.fb_coord_range(win);
+
+        display_settings.min_fb = min;
+        display_settings.max_fb = max;
 
         let (min, max) = self.selection_region(win);
         display_settings.min_selection = min;
@@ -937,6 +969,8 @@ impl App {
 #[derive(Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 struct DisplaySettings {
+    min_fb: [f32; 2],
+    max_fb: [f32; 2],
     min_uv: [f32; 2],
     max_uv: [f32; 2],
     min_selection: [f32; 2],

@@ -1840,6 +1840,7 @@ dependencies = [
  "raw-window-handle",
  "wgpu",
  "winit",
+ "x11-dl",
 ]
 
 [[package]]
