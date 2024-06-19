@@ -38,7 +38,22 @@ const CHECKERBOARD_DARK_B: f32 = 0.06;
 
 const SELECTION_COLOR: [f32; 4] = [0.2, 0.5, 0.5, 0.1];
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    match run() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("Error: {e}");
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title(concat!(env!("CARGO_PKG_NAME"), " – error"))
+                .set_description(e.to_string())
+                .show();
+            process::exit(1);
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     env_logger::builder()
         .filter_module(env!("CARGO_CRATE_NAME"), log::LevelFilter::Debug)
         .parse_default_env()
