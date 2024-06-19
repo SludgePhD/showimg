@@ -3,7 +3,10 @@ mod ratio;
 use std::{cmp, env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::{
+    util::{BufferInitDescriptor, DeviceExt},
+    CompositeAlphaMode,
+};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -37,6 +40,17 @@ const CHECKERBOARD_DARK_A: f32 = 0.01;
 const CHECKERBOARD_DARK_B: f32 = 0.06;
 
 const SELECTION_COLOR: [f32; 4] = [0.2, 0.5, 0.5, 0.1];
+
+const SUPPORTED_ALPHA_MODES: &[CompositeAlphaMode] = if cfg!(windows) {
+    // On Windows, wgpu only seems to support pre-multiplied alpha with the `Inherit` mode.
+    // FIXME: remove this when wgpu fixes this https://github.com/gfx-rs/wgpu/issues/3486
+    &[
+        CompositeAlphaMode::PreMultiplied,
+        CompositeAlphaMode::Inherit,
+    ]
+} else {
+    &[CompositeAlphaMode::PreMultiplied]
+};
 
 fn main() {
     match run() {
@@ -616,7 +630,8 @@ impl App {
         log::debug!("supported alpha modes: {:?}", surface_caps.alpha_modes);
         let supports_alpha = surface_caps
             .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied);
+            .iter()
+            .any(|m| SUPPORTED_ALPHA_MODES.contains(m));
         let surface_format = *surface_caps
             .formats
             .get(0)
@@ -916,11 +931,11 @@ impl App {
             .get_default_config(&win.adapter, res.width, res.height)
             .expect("adapter does not support surface");
 
-        if caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+        for mode in SUPPORTED_ALPHA_MODES {
+            if caps.alpha_modes.contains(mode) {
+                config.alpha_mode = *mode;
+                break;
+            }
         }
 
         log::trace!(
