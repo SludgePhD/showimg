@@ -2,6 +2,7 @@ mod ratio;
 
 use std::{cmp, env, fs, mem, path::Path, process, sync::Arc, time::Instant};
 
+use anyhow::Context;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
@@ -56,11 +57,11 @@ fn main() {
     match run() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("Error: {e}");
+            eprintln!("Error: {e:#}");
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
                 .set_title(concat!(env!("CARGO_PKG_NAME"), " – error"))
-                .set_description(e.to_string())
+                .set_description(format!("{e:#}"))
                 .show();
             process::exit(1);
         }
@@ -83,10 +84,15 @@ fn run() -> anyhow::Result<()> {
     };
 
     log::info!("opening '{}'", path.display());
-    let kb = fs::metadata(path)?.len() / 1024;
+    let kb = fs::metadata(path)
+        .context(format!("Failed to open image file '{}'", path.display()))?
+        .len()
+        / 1024;
 
     let start = Instant::now();
-    let image = image::open(path)?.into_rgba8();
+    let image = image::open(path)
+        .context(format!("Failed to open image file '{}'", path.display()))?
+        .into_rgba8();
     let image_aspect_ratio = image.width() as f32 / image.height() as f32;
     log::debug!(
         "loaded {}x{} image from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB)",

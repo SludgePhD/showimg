@@ -1,6 +1,6 @@
 **showimg** is a funny little image viewer / overlay
 
-It displays images without any window decorations and makes them stay on top of
+it displays images without any window decorations and makes them stay on top of
 other windows.
 
 ### controls
