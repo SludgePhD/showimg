@@ -17,8 +17,8 @@ use winit::{
     window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
 };
 
-const MAX_WIDTH: u32 = 1280;
-const MAX_HEIGHT: u32 = 720;
+const WIN_WIDTH: u32 = 1280;
+const WIN_HEIGHT: u32 = 720;
 
 /// Width of the border around the window contents within which the window gets
 /// resized instead of moved.
@@ -52,6 +52,9 @@ const SUPPORTED_ALPHA_MODES: &[CompositeAlphaMode] = if cfg!(windows) {
 } else {
     &[CompositeAlphaMode::PreMultiplied]
 };
+
+/// Texture format used during rendering. Must match the format in `preprocess.wgsl`.
+const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 fn main() {
     match run() {
@@ -113,7 +116,9 @@ fn run() -> anyhow::Result<()> {
 
     event_loop.run_app(&mut App {
         image_aspect_ratio,
-        image,
+        image_width: image.width(),
+        image_height: image.height(),
+        images: vec![image],
         title: title.into(),
         ..App::default()
     })?;
@@ -132,15 +137,21 @@ struct Win {
 
     /// The main render pipeline that displays the viewed image.
     display_pipeline: wgpu::RenderPipeline,
+    /// Uniform buffer containing the [`DisplaySettings`].
     display_settings: wgpu::Buffer,
-    display_bind_group: wgpu::BindGroup,
+    /// One `BindGroup` per animation frame.
+    display_bind_groups: Vec<wgpu::BindGroup>,
 }
 
 #[derive(Default)]
 struct App {
     image_aspect_ratio: f32, // full image aspect ratio; never changes
     aspect_ratio: f32,       // selection aspect ratio
-    image: image::RgbaImage,
+    /// Frame data; cleared during startup.
+    images: Vec<image::RgbaImage>,
+    image_width: u32,
+    image_height: u32,
+    frame_index: usize,
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
@@ -159,7 +170,7 @@ enum CursorMode {
     Select(PhysicalPosition<f64>),
 }
 
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum TransparencyMode {
     #[default]
     TrueTransparency,
@@ -170,7 +181,8 @@ enum TransparencyMode {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let win = self.create_window(event_loop);
+            let images = mem::take(&mut self.images);
+            let win = self.create_window(event_loop, images);
             if !win.supports_alpha {
                 self.transparency = TransparencyMode::LightCheckerboard;
             }
@@ -345,6 +357,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     };
+                    log::debug!("T -> cycling transparency mode to {:?}", self.transparency);
                     win.window.request_redraw();
                 }
                 _ => {}
@@ -359,7 +372,6 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    // FIXME: does not work in X11, try getting rid of `drag_resize_window`
     fn enforce_aspect_ratio(&self, win: &Win, size: PhysicalSize<u32>) {
         // We use the `CursorMode` as a hint – if we're resizing vertically, respect the requested
         // height, if we're resizing horizontally, respect the requested width.
@@ -398,12 +410,12 @@ impl App {
             self.aspect_ratio = self.image_aspect_ratio;
         } else {
             self.min_uv = [
-                win.image_info.left as f32 / self.image.width() as f32,
-                win.image_info.top as f32 / self.image.height() as f32,
+                win.image_info.left as f32 / self.image_width as f32,
+                win.image_info.top as f32 / self.image_height as f32,
             ];
             self.max_uv = [
-                win.image_info.right as f32 / self.image.width() as f32,
-                win.image_info.bottom as f32 / self.image.height() as f32,
+                win.image_info.right as f32 / self.image_width as f32,
+                win.image_info.bottom as f32 / self.image_height as f32,
             ];
             let range = [
                 self.max_uv[0] - self.min_uv[0],
@@ -531,25 +543,25 @@ impl App {
         display_settings
     }
 
-    fn create_window(&self, event_loop: &ActiveEventLoop) -> Win {
+    fn create_window(&self, event_loop: &ActiveEventLoop, images: Vec<image::RgbaImage>) -> Win {
         // Compute initial window size; fit aspect ratio.
         let s1 = PhysicalSize::new(
-            (MAX_HEIGHT as f32 * self.image_aspect_ratio) as u32,
-            MAX_HEIGHT,
+            (WIN_HEIGHT as f32 * self.image_aspect_ratio) as u32,
+            WIN_HEIGHT,
         );
         let s2 = PhysicalSize::new(
-            MAX_WIDTH,
-            (MAX_WIDTH as f32 / self.image_aspect_ratio) as u32,
+            WIN_WIDTH,
+            (WIN_WIDTH as f32 / self.image_aspect_ratio) as u32,
         );
-        let fit_size = if s1.width > MAX_WIDTH || s1.height > MAX_HEIGHT {
+        let fit_size = if s1.width > WIN_WIDTH || s1.height > WIN_HEIGHT {
             s2
         } else {
             s1
         };
 
         let mut size = fit_size;
-        size.width = cmp::min(size.width, self.image.width());
-        size.height = cmp::min(size.height, self.image.height());
+        size.width = cmp::min(size.width, self.image_width);
+        size.height = cmp::min(size.height, self.image_height);
         log::debug!(
             "window size: fit={}x{}, clamped={}x{}",
             fit_size.width,
@@ -659,50 +671,15 @@ impl App {
             mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let size = wgpu::Extent3d {
-            width: self.image.width(),
-            height: self.image.height(),
-            depth_or_array_layers: 1,
-        };
-        let input_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let input_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: input_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            input_texture.as_image_copy(),
-            &self.image,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * self.image.width()),
-                rows_per_image: None,
-            },
-            size,
-        );
 
-        // Preprocess the image.
-        let output_format = wgpu::TextureFormat::Rgba16Float;
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+        // A single `ImageInfo` is bound to the shader for every frame; this computes a conservative
+        // result that takes all frames into account.
+        let image_info = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
-            size,
-            mip_level_count: 1, // TODO
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: output_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
+            contents: bytemuck::bytes_of(&ImageInfo::default()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("preprocess.wgsl").into()),
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let preprocess_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -720,7 +697,7 @@ impl App {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: output_format,
+                        format: TEXTURE_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -737,94 +714,31 @@ impl App {
                 },
             ],
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&bgl],
-                    push_constant_ranges: &[],
+        let preprocess_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &[&preprocess_bgl],
+                        push_constant_ranges: &[],
+                    }),
+                ),
+                module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("preprocess.wgsl"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("preprocess.wgsl").into()),
                 }),
-            ),
-            module: &shader,
-            entry_point: "preprocess",
-            compilation_options: Default::default(),
-        });
-        let image_info = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::bytes_of(&ImageInfo::default()),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        &input_texture.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &output_texture.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(image_info.as_entire_buffer_binding()),
-                },
-            ],
-        });
-        const WORKGROUP_SIZE: u32 = 16;
-        let workgroups_x = (self.image.width() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-        let workgroups_y = (self.image.height() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-        let mut enc = device.create_command_encoder(&Default::default());
-        let mut pass = enc.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
-        drop(pass);
+                entry_point: "preprocess",
+                compilation_options: Default::default(),
+            });
 
-        // Download the computed image info.
-        let image_info_dl = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: image_info.size(),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        enc.copy_buffer_to_buffer(&image_info, 0, &image_info_dl, 0, image_info.size());
-
-        let idx = queue.submit([enc.finish()]);
-
-        image_info_dl
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, Result::unwrap);
-        device
-            .poll(wgpu::Maintain::wait_for(idx))
-            .panic_on_timeout();
-
-        let image_info: ImageInfo =
-            *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
-
-        if image_info.uses_alpha() && !supports_alpha {
-            log::warn!(
-                "compositor does not support premultiplied alpha; using checkerboard background"
-            );
-        }
-        if image_info.uses_alpha() && !image_info.known_straight() {
-            log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
-        }
-
-        // Create the resources used for displaying the image.
         let display_settings = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: mem::size_of::<DisplaySettings>() as _,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let display_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -855,31 +769,157 @@ impl App {
                 },
             ],
         });
-        let display_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+
+        // Upload and preprocess frames.
+        let mut display_bind_groups = Vec::new();
+        let mut preprocess = Vec::new();
+        for image in &images {
+            let size = wgpu::Extent3d {
+                width: image.width(),
+                height: image.height(),
+                depth_or_array_layers: 1,
+            };
+            let input_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            let input_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: input_format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                input_texture.as_image_copy(),
+                &image,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * self.image_width),
+                    rows_per_image: None,
+                },
+                size,
+            );
+
+            let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TEXTURE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            });
+            let preprocess_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &preprocess_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &input_texture.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &output_texture.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(
+                            image_info.as_entire_buffer_binding(),
+                        ),
+                    },
+                ],
+            });
+            preprocess.push(preprocess_bind_group);
+
+            let display_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &display_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &output_texture.create_view(&Default::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(
+                            display_settings.as_entire_buffer_binding(),
+                        ),
+                    },
+                ],
+            });
+
+            display_bind_groups.push(display_bind_group);
+        }
+
+        let mut enc = device.create_command_encoder(&Default::default());
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        for (image, preprocess_bind_group) in images.iter().zip(&preprocess) {
+            /// Must match `preprocess.wgsl`.
+            const WORKGROUP_SIZE: u32 = 16;
+            let workgroups_x = (image.width() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let workgroups_y = (image.height() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            pass.set_pipeline(&preprocess_pipeline);
+            pass.set_bind_group(0, preprocess_bind_group, &[]);
+            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        }
+        drop(pass);
+
+        // Copy the computed image information to a staging buffer.
+        let image_info_dl = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &output_texture.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(
-                        display_settings.as_entire_buffer_binding(),
-                    ),
-                },
-            ],
+            size: image_info.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
+        enc.copy_buffer_to_buffer(&image_info, 0, &image_info_dl, 0, image_info.size());
+
+        let idx = queue.submit([enc.finish()]);
+
+        image_info_dl
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, Result::unwrap);
+        device
+            .poll(wgpu::Maintain::wait_for(idx))
+            .panic_on_timeout();
+
+        let image_info: ImageInfo =
+            *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
+
+        log::debug!(
+            "left={} top={} right={} bottom={}",
+            image_info.left,
+            image_info.top,
+            image_info.right,
+            image_info.bottom,
+        );
+        log::debug!(
+            "uses_alpha={} known_straight={}",
+            image_info.uses_alpha(),
+            image_info.known_straight(),
+        );
+        if image_info.uses_alpha() && !supports_alpha {
+            log::warn!(
+                "compositor does not support premultiplied alpha; using checkerboard background"
+            );
+        }
+        if image_info.uses_alpha() && !image_info.known_straight() {
+            log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
+        }
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("display.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("display.wgsl").into()),
         });
         let display_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -887,7 +927,7 @@ impl App {
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: None,
-                    bind_group_layouts: &[&bgl],
+                    bind_group_layouts: &[&display_bgl],
                     push_constant_ranges: &[],
                 }),
             ),
@@ -922,7 +962,7 @@ impl App {
             queue,
             display_pipeline,
             display_settings,
-            display_bind_group,
+            display_bind_groups,
         };
         self.recreate_swapchain(&win);
         win
@@ -992,7 +1032,7 @@ impl App {
             ..Default::default()
         });
         pass.set_pipeline(&win.display_pipeline);
-        pass.set_bind_group(0, &win.display_bind_group, &[]);
+        pass.set_bind_group(0, &win.display_bind_groups[self.frame_index], &[]);
         pass.draw(0..4, 0..1);
         drop(pass);
 
