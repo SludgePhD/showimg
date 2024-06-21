@@ -1,8 +1,22 @@
 mod ratio;
 
-use std::{cmp, env, fs, mem, path::Path, process, sync::Arc, time::Instant};
+use std::{
+    cmp, env,
+    fs::{self, File},
+    io::BufReader,
+    mem,
+    path::Path,
+    process,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
-use anyhow::Context;
+use anyhow::{bail, Context};
+use image::{
+    codecs::{gif::GifDecoder, png::PngDecoder},
+    AnimationDecoder, Delay, Frame, ImageFormat,
+};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
@@ -12,7 +26,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
 };
@@ -93,19 +107,58 @@ fn run() -> anyhow::Result<()> {
         / 1024;
 
     let start = Instant::now();
-    let image = image::open(path)
-        .context(format!("Failed to open image file '{}'", path.display()))?
-        .into_rgba8();
-    let image_aspect_ratio = image.width() as f32 / image.height() as f32;
+    let reader = BufReader::new(File::open(path)?);
+    let format = ImageFormat::from_path(path)?;
+    let frames = match format {
+        ImageFormat::Png => {
+            let dec = PngDecoder::new(reader)?;
+            if dec.is_apng()? {
+                dec.apng()?.into_frames().collect_frames()?
+            } else {
+                // It's awkward to get a normal fucking image from a `PngDecoder` for some reason,
+                // so just use the `image::load` API.
+                vec![Frame::new(image::open(path)?.into_rgba8())]
+            }
+        }
+        ImageFormat::Gif => GifDecoder::new(reader)?.into_frames().collect_frames()?,
+        // FIXME: https://github.com/image-rs/image/issues/2263
+        //ImageFormat::WebP => WebPDecoder::new(reader)?.into_frames().collect_frames()?,
+        _ => vec![Frame::new(image::open(path)?.into_rgba8())],
+    };
+    assert!(!frames.is_empty());
+
+    for win in frames.windows(2) {
+        let (a, b) = (&win[0], &win[1]);
+        if a.buffer().width() != b.buffer().width() || a.buffer().height() != b.buffer().height() {
+            bail!("`showimg` does not support animations with dynamic frame sizes");
+        }
+    }
+
+    let what = if frames.len() == 1 {
+        "image"
+    } else {
+        "animation"
+    };
+    let image = frames[0].buffer();
+    let image_width = image.width();
+    let image_height = image.height();
+    let image_aspect_ratio = image_width as f32 / image_height as f32;
     log::debug!(
-        "loaded {}x{} image from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB)",
+        "loaded {}x{} {what} from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB per frame; {} frames)",
         image.width(),
         image.height(),
         kb,
         start.elapsed(),
         image_aspect_ratio,
         (image.width() * image.height() * 4) / 1024,
+        frames.len(),
     );
+    let mut images = Vec::new();
+    let mut delays = Vec::new();
+    for frame in frames {
+        delays.push(frame.delay());
+        images.push(frame.into_buffer());
+    }
 
     let title = match path.file_name() {
         Some(name) => name.to_string_lossy(),
@@ -113,12 +166,15 @@ fn run() -> anyhow::Result<()> {
     };
 
     let event_loop = EventLoop::builder().build()?;
+    let proxy = event_loop.create_proxy();
 
     event_loop.run_app(&mut App {
+        frame_count: images.len(),
         image_aspect_ratio,
-        image_width: image.width(),
-        image_height: image.height(),
-        images: vec![image],
+        image_width,
+        image_height,
+        images,
+        delays: Some((proxy, delays)),
         title: title.into(),
         ..App::default()
     })?;
@@ -149,9 +205,11 @@ struct App {
     aspect_ratio: f32,       // selection aspect ratio
     /// Frame data; cleared during startup.
     images: Vec<image::RgbaImage>,
+    delays: Option<(EventLoopProxy<()>, Vec<Delay>)>,
     image_width: u32,
     image_height: u32,
     frame_index: usize,
+    frame_count: usize,
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
@@ -186,10 +244,31 @@ impl ApplicationHandler for App {
             if !win.supports_alpha {
                 self.transparency = TransparencyMode::LightCheckerboard;
             }
+            let window = win.window.clone();
             self.window = Some(win);
 
             self.reset_region();
+
+            if let Some((proxy, delays)) = mem::take(&mut self.delays) {
+                if delays.len() <= 1 {
+                    return;
+                }
+
+                thread::spawn(move || {
+                    log::debug!("starting animation thread");
+                    for delay in delays.iter().cycle() {
+                        thread::sleep(Duration::from(*delay));
+                        let Ok(()) = proxy.send_event(()) else { break };
+                        window.request_redraw();
+                    }
+                });
+            }
         }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // The animation thread sends a user event every time the current frame's delay expires.
+        self.frame_index = (self.frame_index + 1) % self.frame_count;
     }
 
     fn window_event(
