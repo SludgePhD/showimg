@@ -9,7 +9,8 @@ log = "0.4.21"
 env_logger = { version = "0.11.3", default-features = false, features = ["auto-color"] }
 rfd = "0.14.1"
 
-winit = "0.30.0"
+# turn off wayland CSDs since we don't use them
+winit = { version = "0.30.0", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 wgpu = "0.20.0"
 raw-window-handle = "0.6.1"
 image = "0.25.1"
