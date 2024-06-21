@@ -20,4 +20,4 @@ other windows.
 
 ### license
 
-https://github.com/SludgePhD/showimg/assets/96552222/b4effa1e-212d-4a29-acb8-60ab68db1bf0
+https://github.com/SludgePhD/showimg/assets/96552222/b7c4d9ec-18f1-4a3d-9827-4522a84ce1b2
