@@ -459,9 +459,15 @@ impl App {
             CursorMode::Resize(ResizeDirection::North | ResizeDirection::South)
         );
         let fitted_size = if is_vertical {
-            PhysicalSize::new((size.height as f32 * self.aspect_ratio) as u32, size.height)
+            PhysicalSize::new(
+                (size.height as f32 * self.aspect_ratio).round() as u32,
+                size.height,
+            )
         } else {
-            PhysicalSize::new(size.width, (size.width as f32 / self.aspect_ratio) as u32)
+            PhysicalSize::new(
+                size.width,
+                (size.width as f32 / self.aspect_ratio).round() as u32,
+            )
         };
         log::trace!(
             "enforce_aspect_ratio: requested {}x{}, fitted size {}x{} (vertical={is_vertical})",
@@ -625,12 +631,12 @@ impl App {
     fn create_window(&self, event_loop: &ActiveEventLoop, images: Vec<image::RgbaImage>) -> Win {
         // Compute initial window size; fit aspect ratio.
         let s1 = PhysicalSize::new(
-            (WIN_HEIGHT as f32 * self.image_aspect_ratio) as u32,
+            (WIN_HEIGHT as f32 * self.image_aspect_ratio).round() as u32,
             WIN_HEIGHT,
         );
         let s2 = PhysicalSize::new(
             WIN_WIDTH,
-            (WIN_WIDTH as f32 / self.image_aspect_ratio) as u32,
+            (WIN_WIDTH as f32 / self.image_aspect_ratio).round() as u32,
         );
         let fit_size = if s1.width > WIN_WIDTH || s1.height > WIN_HEIGHT {
             s2
