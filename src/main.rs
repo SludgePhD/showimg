@@ -2,6 +2,7 @@ mod ratio;
 
 use std::{
     cmp, env,
+    ffi::OsStr,
     fs::{self, File},
     io::BufReader,
     mem,
@@ -108,7 +109,13 @@ fn run() -> anyhow::Result<()> {
 
     let start = Instant::now();
     let reader = BufReader::new(File::open(path)?);
-    let format = ImageFormat::from_path(path)?;
+    // FIXME: `ImageFormat::from_path` doesn't recognize `.apng`
+    // https://github.com/image-rs/image/pull/2264
+    let format = if path.extension() == Some(OsStr::new("apng")) {
+        ImageFormat::Png
+    } else {
+        ImageFormat::from_path(path)?
+    };
     let frames = match format {
         ImageFormat::Png => {
             let dec = PngDecoder::new(reader)?;
@@ -127,6 +134,11 @@ fn run() -> anyhow::Result<()> {
     };
     assert!(!frames.is_empty());
 
+    for frame in &frames {
+        if frame.top() != 0 || frame.left() != 0 {
+            bail!("`showimg` does not support animations with per-frame pixel offsets");
+        }
+    }
     for win in frames.windows(2) {
         let (a, b) = (&win[0], &win[1]);
         if a.buffer().width() != b.buffer().width() || a.buffer().height() != b.buffer().height() {
@@ -999,7 +1011,7 @@ impl App {
                 "compositor does not support premultiplied alpha; using checkerboard background"
             );
         }
-        if image_info.uses_alpha() && !image_info.known_straight() {
+        if image_info.uses_partial_alpha() && !image_info.known_straight() {
             log::warn!("image uses alpha channel, but may already be premultiplied; artifacts are possible");
         }
 
@@ -1147,6 +1159,7 @@ struct DisplaySettings {
 #[repr(C)]
 struct ImageInfo {
     uses_alpha: u32,
+    uses_partial_alpha: u32,
     known_straight: u32,
     // X/Y pixel coordinates where the image's content begins
     top: u32,
@@ -1159,6 +1172,7 @@ impl Default for ImageInfo {
     fn default() -> Self {
         Self {
             uses_alpha: 0,
+            uses_partial_alpha: 0,
             known_straight: 0,
             top: u32::MAX,
             right: 0,
@@ -1171,6 +1185,10 @@ impl Default for ImageInfo {
 impl ImageInfo {
     fn uses_alpha(&self) -> bool {
         self.uses_alpha != 0
+    }
+
+    fn uses_partial_alpha(&self) -> bool {
+        self.uses_partial_alpha != 0
     }
 
     fn known_straight(&self) -> bool {

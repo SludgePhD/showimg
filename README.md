@@ -17,6 +17,8 @@ other windows.
 - test aspect-aware window resize logic on native X11 (doesn't work on XWayland) and Windows
 - mipmaps and SPD
 - HDR question mark (I have no use for this, I neither have HDR images nor monitors)
+- some Animated PNGs flicker because the `image` crate doesn't decode them right
+- switch to nearest neighbor interpolation when zooming in beyond some threshold, like VS Code does
 
 ### license
 
