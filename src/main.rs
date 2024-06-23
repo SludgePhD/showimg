@@ -773,7 +773,7 @@ impl App {
             .any(|m| SUPPORTED_ALPHA_MODES.contains(m));
         let surface_format = *surface_caps
             .formats
-            .get(0)
+            .first()
             .expect("adapter cannot render to surface");
 
         let res = pollster::block_on(adapter.request_device(&Default::default(), None));
@@ -913,7 +913,7 @@ impl App {
             });
             queue.write_texture(
                 input_texture.as_image_copy(),
-                &image,
+                image,
                 wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * self.image_width),

@@ -23,7 +23,7 @@ pub fn enforce(win: &Window, aspect_ratio: f32, _size: PhysicalSize<u32>) {
             use x11_dl::xlib::{PAspect, Xlib};
 
             static XLIB: OnceLock<Result<Xlib, OpenError>> = OnceLock::new();
-            let Ok(xlib) = XLIB.get_or_init(|| Xlib::open()).as_ref() else {
+            let Ok(xlib) = XLIB.get_or_init(Xlib::open).as_ref() else {
                 return;
             };
 
