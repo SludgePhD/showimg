@@ -69,6 +69,8 @@ const SUPPORTED_ALPHA_MODES: &[CompositeAlphaMode] = if cfg!(windows) {
 };
 
 /// Texture format used during rendering. Must match the format in `preprocess.wgsl`.
+///
+/// Since this needs to be a storage-compatible format, it can't be any of the `-srgb` formats.
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 fn main() {
@@ -230,6 +232,7 @@ struct App {
     cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
     transparency: TransparencyMode,
+    filter: FilterMode,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -246,6 +249,13 @@ enum TransparencyMode {
     TrueTransparency,
     LightCheckerboard,
     DarkCheckerboard,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum FilterMode {
+    #[default]
+    Smart,
+    Linear,
 }
 
 impl ApplicationHandler for App {
@@ -451,6 +461,14 @@ impl ApplicationHandler for App {
                     log::debug!("T -> cycling transparency mode to {:?}", self.transparency);
                     win.window.request_redraw();
                 }
+                KeyCode::KeyL => {
+                    self.filter = match self.filter {
+                        FilterMode::Smart => FilterMode::Linear,
+                        FilterMode::Linear => FilterMode::Smart,
+                    };
+                    log::debug!("T -> cycling filter mode to {:?}", self.filter);
+                    win.window.request_redraw();
+                }
                 _ => {}
             },
             WindowEvent::CloseRequested => {
@@ -597,6 +615,7 @@ impl App {
             checkerboard_a: [0.0; 4],
             checkerboard_b: [0.0; 4],
             checkerboard_res: CHECKERBOARD_CELL_SIZE,
+            force_linear: 0,
             padding: Default::default(),
         };
 
@@ -635,6 +654,11 @@ impl App {
                 display_settings.checkerboard_a = [a, a, a, 1.0];
                 display_settings.checkerboard_b = [b, b, b, 1.0];
             }
+        }
+
+        match self.filter {
+            FilterMode::Smart => display_settings.force_linear = 0,
+            FilterMode::Linear => display_settings.force_linear = 1,
         }
 
         display_settings
@@ -1152,7 +1176,8 @@ struct DisplaySettings {
     checkerboard_a: [f32; 4],
     checkerboard_b: [f32; 4],
     checkerboard_res: u32,
-    padding: [u32; 3],
+    force_linear: u32,
+    padding: [u32; 2],
 }
 
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

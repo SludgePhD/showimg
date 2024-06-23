@@ -11,14 +11,14 @@ other windows.
 - middle click (hold): select a region to zoom into
 - backspace: reset zoom region
 - T: toggle window background for transparent images (transparent, light checkerboard, dark checkerboard)
+- L: force linear interpolation even when each image pixel is larger than a screen pixel (by default, this transitions to pixel art friendly nearest-neighbor)
 
-### todo
+### bugs & todos
 
 - test aspect-aware window resize logic on native X11 (doesn't work on XWayland) and Windows
 - mipmaps and SPD
-- HDR question mark (I have no use for this, I neither have HDR images nor monitors)
+- HDR support? (I have no use for this, I neither have HDR images nor monitors)
 - some Animated PNGs flicker because the `image` crate doesn't decode them right
-- switch to nearest neighbor interpolation when zooming in beyond some threshold, like VS Code does
 
 ### license
 

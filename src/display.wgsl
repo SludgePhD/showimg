@@ -22,7 +22,10 @@ struct DisplaySettings {
     checkerboard_b: vec4f,
     // width/height of each checkerboard square in output pixels
     checkerboard_res: u32,
+    force_linear: u32, // 0 = smart filtering, 1 = always use linear filtering
 }
+
+const MIN_SMOOTHNESS: f32 = 0.25;
 
 struct VertexOutput {
     @builtin(position)
@@ -56,6 +59,33 @@ fn fragment(in: VertexOutput) -> @location(0) vec4f {
 
     // Map the UV coords (which are now in range 0 to 1) to the range indicated in the display settings.
     uv = (u.max_uv - u.min_uv) * uv + u.min_uv;
+
+    if u.force_linear == 0 {
+        // We want to render zoomed-in pixel art without making it all blurry, and without pixels getting
+        // jittery when the window is enlarged. To do that, we use the approach detailed here:
+        // https://csantosbh.wordpress.com/2014/01/25/manual-texture-filtering-for-pixelated-games-in-webgl/
+        // We want the "smoothness" to be 1 when each texel occupies one or fewer window pixels, and
+        // scale down to some minimum when each texel occupies more than one window pixel.
+        // The size of each texel can be found out via derivatives.
+        let dim = vec2f(textureDimensions(in_texture));
+        let px = uv * dim; // sampled texture pixel
+        let dxdy = abs(vec2(dpdxFine(px.x), dpdyFine(px.y)));
+        let tex_per_px = max(dxdy.x, dxdy.y);
+        // 1 or more texels per screen pixel? Full linear interpolation.
+        // Less than 1? Gradually transition to nearest neighbor.
+        let smoothness = clamp(tex_per_px, MIN_SMOOTHNESS, 1.0);
+
+        var fract = fract(px);
+        if smoothness == 0.0 { // avoid division by zero
+            fract = vec2(0.5);
+        } else {
+            fract = clamp(fract / smoothness, vec2(0.0), vec2(0.5))
+                + clamp((fract - vec2(1.0)) / smoothness + 0.5, vec2(0.0), vec2(0.5));
+        }
+
+        uv = (floor(px) + fract) / dim;
+    }
+
     let tex_color = select(textureSample(in_texture, in_sampler, uv), vec4(0.0), border);
 
     // do a pre-multiplied alpha blend with the checkerboard colors
