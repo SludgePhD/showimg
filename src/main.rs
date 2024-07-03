@@ -339,7 +339,7 @@ impl ApplicationHandler for App {
                 ElementState::Pressed => {
                     if let Some(pos) = self.cursor_pos {
                         self.cursor_mode = CursorMode::Select(pos);
-                        win.window.set_cursor(CursorIcon::Crosshair);
+                        self.update_cursor();
                         win.window.request_redraw();
                     }
                 }
@@ -369,7 +369,7 @@ impl ApplicationHandler for App {
                     }
 
                     self.cursor_mode = CursorMode::Move;
-                    win.window.set_cursor(CursorIcon::Move);
+                    self.update_cursor();
                     self.enforce_aspect_ratio(win, win.window.inner_size());
                     win.window.request_redraw();
                 }
@@ -423,11 +423,7 @@ impl ApplicationHandler for App {
                     (true, true, false, true) => CursorMode::Resize(ResizeDirection::NorthEast),
                 };
 
-                match self.cursor_mode {
-                    CursorMode::Move => win.window.set_cursor(CursorIcon::Move),
-                    CursorMode::Resize(dir) => win.window.set_cursor(CursorIcon::from(dir)),
-                    _ => {}
-                }
+                self.update_cursor();
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -481,6 +477,16 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn update_cursor(&self) {
+        let Some(win) = &self.window else { return };
+        let cursor = match self.cursor_mode {
+            CursorMode::Move => CursorIcon::Grab,
+            CursorMode::Resize(dir) => CursorIcon::from(dir),
+            CursorMode::Select(_) => CursorIcon::Crosshair,
+        };
+        win.window.set_cursor(cursor);
+    }
+
     fn enforce_aspect_ratio(&self, win: &Win, size: PhysicalSize<u32>) {
         // We use the `CursorMode` as a hint – if we're resizing vertically, respect the requested
         // height, if we're resizing horizontally, respect the requested width.

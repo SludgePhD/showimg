@@ -19,6 +19,7 @@ other windows.
 - mipmaps and SPD
 - HDR support? (I have no use for this, I neither have HDR images nor monitors)
 - some Animated PNGs flicker because the `image` crate doesn't decode them right
+- Ctrl + Drag should create a Drag&Drop source containing the image path (needs winit support first)
 
 ### license
 
