@@ -97,17 +97,18 @@ fn run() -> anyhow::Result<()> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     let path = match &*args {
         [path] if path != "--help" => Path::new(path),
-        _ => {
-            eprintln!("usage: showimg <path>");
-            process::exit(1);
-        }
+        _ => bail!(
+            "Missing argument. Either drag an image file onto the application, register it as an \
+            image file handler in your file manager, or invoke `{}` with a path on the command \
+            line.",
+            env!("CARGO_PKG_NAME"),
+        ),
     };
 
     log::info!("opening '{}'", path.display());
-    let kb = fs::metadata(path)
-        .context(format!("Failed to open image file '{}'", path.display()))?
-        .len()
-        / 1024;
+    let metadata =
+        fs::metadata(path).context(format!("Failed to open image file '{}'", path.display()))?;
+    let kb = metadata.len() / 1024;
 
     let start = Instant::now();
     let reader = BufReader::new(File::open(path)?);
