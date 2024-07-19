@@ -21,6 +21,9 @@ on Linux, we (apparently!) need [`zenity`]. your distro should have it packaged.
 
 ### bugs & todos
 
+- 1:1 scaling results in a blurry image, seems like it's not sampling the pixel center
+  - window size might slightly mismatch the image size due to bad rounding
+  - there should be a shortcut (`1` key?) that forces the window size to equal the image size
 - test aspect-aware window resize logic on native X11 (doesn't work on XWayland) and Windows
 - mipmaps and SPD
 - HDR support? (I have no use for this, I neither have HDR images nor monitors)

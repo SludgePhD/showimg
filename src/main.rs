@@ -858,6 +858,7 @@ impl App {
                 }),
                 entry_point: "preprocess",
                 compilation_options: Default::default(),
+                cache: None,
             });
 
         let display_settings = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1078,6 +1079,7 @@ impl App {
                 targets: &[Some(wgpu::ColorTargetState::from(surface_format))],
             }),
             multiview: None,
+            cache: None,
         });
 
         let win = Win {

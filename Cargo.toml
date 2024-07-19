@@ -11,7 +11,7 @@ rfd = "0.14.1"
 
 # turn off wayland CSDs since we don't use them
 winit = { version = "0.30.0", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
-wgpu = "0.20.0"
+wgpu = "22"
 raw-window-handle = "0.6.1"
 image = "0.25.1"
 pollster = "0.3.0"
