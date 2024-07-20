@@ -536,8 +536,8 @@ impl App {
                 win.image_info.top as f32 / self.image_height as f32,
             ];
             self.max_uv = [
-                win.image_info.right as f32 / self.image_width as f32,
-                win.image_info.bottom as f32 / self.image_height as f32,
+                (win.image_info.right + 1) as f32 / self.image_width as f32,
+                (win.image_info.bottom + 1) as f32 / self.image_height as f32,
             ];
             let range = [
                 self.max_uv[0] - self.min_uv[0],
@@ -1172,7 +1172,7 @@ impl App {
     }
 }
 
-#[derive(Clone, Copy, bytemuck::NoUninit)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 struct DisplaySettings {
     min_fb: [f32; 2],

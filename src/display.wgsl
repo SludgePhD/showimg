@@ -76,7 +76,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4f {
         let smoothness = clamp(tex_per_px, MIN_SMOOTHNESS, 1.0);
 
         var fract = fract(px);
-        if smoothness == 0.0 { // avoid division by zero
+        if smoothness == 0.0 {
+            // Avoid division by zero. Zero smoothness means nearest-neighbor, so clamp the
+            // coordinate to the pixel's center.
             fract = vec2(0.5);
         } else {
             fract = clamp(fract / smoothness, vec2(0.0), vec2(0.5))
