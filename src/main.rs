@@ -463,7 +463,18 @@ impl ApplicationHandler for App {
                         FilterMode::Smart => FilterMode::Linear,
                         FilterMode::Linear => FilterMode::Smart,
                     };
-                    log::debug!("T -> cycling filter mode to {:?}", self.filter);
+                    log::debug!("L -> cycling filter mode to {:?}", self.filter);
+                    win.window.request_redraw();
+                }
+                KeyCode::Digit1 => {
+                    // Set the window size to the exact size of the view.
+                    let width = (self.max_uv[0] - self.min_uv[0]) * self.image_width as f32;
+                    let height = width / self.aspect_ratio;
+                    let _ = win.window.request_inner_size(PhysicalSize::new(
+                        width.round() as u32,
+                        height.round() as u32,
+                    ));
+                    self.recreate_swapchain(win);
                     win.window.request_redraw();
                 }
                 _ => {}
