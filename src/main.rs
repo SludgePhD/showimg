@@ -191,6 +191,11 @@ fn run() -> anyhow::Result<()> {
         images,
         delays: Some((proxy, delays)),
         title: title.into(),
+        instance: wgpu::Instance::new(wgpu::InstanceDescriptor {
+            // Disable the OpenGL backend. It causes crashes even when not used.
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        }),
         ..App::default()
     })?;
 
