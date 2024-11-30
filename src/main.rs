@@ -76,16 +76,18 @@ const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 fn main() {
     match run() {
         Ok(()) => {}
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Error)
-                .set_title(concat!(env!("CARGO_PKG_NAME"), " – error"))
-                .set_description(format!("{e:#}"))
-                .show();
-            process::exit(1);
-        }
+        Err(e) => exit_with_error(format!("{e:#}")),
     }
+}
+
+fn exit_with_error(error: String) -> ! {
+    eprintln!("Error: {error:#}");
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title(concat!(env!("CARGO_PKG_NAME"), " – error"))
+        .set_description(format!("{error:#}"))
+        .show();
+    process::exit(1);
 }
 
 fn run() -> anyhow::Result<()> {
@@ -799,7 +801,45 @@ impl App {
             .first()
             .expect("adapter cannot render to surface");
 
-        let res = pollster::block_on(adapter.request_device(&Default::default(), None));
+        let limits = adapter.limits();
+        log::debug!(
+            "limits: maxTextureDimension2D={}, maxBindGroups={}, maxBindingsPerBindGroup={}",
+            limits.max_texture_dimension_2d,
+            limits.max_bind_groups,
+            limits.max_bindings_per_bind_group,
+        );
+        log::debug!(
+            "compute limits: maxComputeWorkgroupStorageSize={}, \
+            maxComputeInvocationsPerWorkgroup={}, maxComputeWorkgroupsPerDimension={}, \
+            maxComputeWorkgroupSize=[{}, {}, {}]",
+            limits.max_compute_workgroup_storage_size,
+            limits.max_compute_invocations_per_workgroup,
+            limits.max_compute_workgroups_per_dimension,
+            limits.max_compute_workgroup_size_x,
+            limits.max_compute_workgroup_size_y,
+            limits.max_compute_workgroup_size_z,
+        );
+
+        if limits.max_texture_dimension_2d < self.image_height
+            || limits.max_texture_dimension_2d < self.image_width
+        {
+            exit_with_error(format!(
+                "Image size {}x{} exceeds maximum supported texture size {}x{}",
+                self.image_width,
+                self.image_height,
+                limits.max_texture_dimension_2d,
+                limits.max_texture_dimension_2d
+            ));
+        }
+
+        let res = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                required_limits: wgpu::Limits::default().using_resolution(limits),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                ..Default::default()
+            },
+            None,
+        ));
         let (device, queue) = match res {
             Ok((dev, q)) => (dev, q),
             Err(e) => {
