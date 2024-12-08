@@ -13,7 +13,7 @@ rfd = "0.14.1"
 winit = { version = "0.30.0", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 wgpu = "22"
 raw-window-handle = "0.6.1"
-image = "0.25.1"
+image = "0.25.5"
 pollster = "0.3.0"
 bytemuck = { version = "1.0.0", features = ["derive"] }
 

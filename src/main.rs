@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use image::{
-    codecs::{gif::GifDecoder, png::PngDecoder},
+    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
     AnimationDecoder, Delay, Frame, ImageFormat,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -133,8 +133,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
         ImageFormat::Gif => GifDecoder::new(reader)?.into_frames().collect_frames()?,
-        // FIXME: https://github.com/image-rs/image/issues/2263
-        //ImageFormat::WebP => WebPDecoder::new(reader)?.into_frames().collect_frames()?,
+        ImageFormat::WebP => WebPDecoder::new(reader)?.into_frames().collect_frames()?,
         _ => vec![Frame::new(image::open(path)?.into_rgba8())],
     };
     assert!(!frames.is_empty());
