@@ -25,7 +25,6 @@ on Linux, we (apparently!) need [`zenity`]. your distro should have it packaged.
 - test aspect-aware window resize logic on native X11 (doesn't work on XWayland) and Windows
 - mipmaps and SPD
 - HDR support? (I have no use for this, I neither have HDR images nor monitors)
-- some Animated PNGs flicker because the `image` crate doesn't decode them right
 - Ctrl + Drag should create a Drag&Drop source containing the image path (needs winit support first)
 
 ### license
