@@ -2,7 +2,6 @@ mod ratio;
 
 use std::{
     cmp, env,
-    ffi::OsStr,
     fs::{self, File},
     io::BufReader,
     mem,
@@ -114,13 +113,7 @@ fn run() -> anyhow::Result<()> {
 
     let start = Instant::now();
     let reader = BufReader::new(File::open(path)?);
-    // FIXME: `ImageFormat::from_path` doesn't recognize `.apng`
-    // https://github.com/image-rs/image/pull/2264
-    let format = if path.extension() == Some(OsStr::new("apng")) {
-        ImageFormat::Png
-    } else {
-        ImageFormat::from_path(path)?
-    };
+    let format = ImageFormat::from_path(path)?;
     let frames = match format {
         ImageFormat::Png => {
             let dec = PngDecoder::new(reader)?;
