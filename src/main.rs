@@ -185,7 +185,7 @@ fn run() -> anyhow::Result<()> {
         images,
         delays: Some((proxy, delays)),
         title: title.into(),
-        instance: wgpu::Instance::new(wgpu::InstanceDescriptor {
+        instance: wgpu::Instance::new(&wgpu::InstanceDescriptor {
             // Disable the OpenGL backend. It causes crashes even when not used.
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -904,7 +904,7 @@ impl App {
                     label: Some("preprocess.wgsl"),
                     source: wgpu::ShaderSource::Wgsl(include_str!("preprocess.wgsl").into()),
                 }),
-                entry_point: "preprocess",
+                entry_point: Some("preprocess"),
                 compilation_options: Default::default(),
                 cache: None,
             });
@@ -970,7 +970,7 @@ impl App {
             queue.write_texture(
                 input_texture.as_image_copy(),
                 image,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * self.image_width),
                     rows_per_image: None,
@@ -1110,7 +1110,7 @@ impl App {
             ),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vertex",
+                entry_point: Some("vertex"),
                 compilation_options: Default::default(),
                 buffers: &[],
             },
@@ -1122,7 +1122,7 @@ impl App {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fragment",
+                entry_point: Some("fragment"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState::from(surface_format))],
             }),
