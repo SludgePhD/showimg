@@ -890,6 +890,8 @@ impl App {
                 },
             ],
         });
+
+        const PREPROCESS_WORKGROUP_SIZE: u32 = 16;
         let preprocess_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: None,
@@ -905,7 +907,14 @@ impl App {
                     source: wgpu::ShaderSource::Wgsl(include_str!("preprocess.wgsl").into()),
                 }),
                 entry_point: Some("preprocess"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[(
+                        "WORKGROUP_SIZE".to_string(),
+                        PREPROCESS_WORKGROUP_SIZE as f64,
+                    )]
+                    .into(),
+                    zero_initialize_workgroup_memory: false,
+                },
                 cache: None,
             });
 
@@ -1043,10 +1052,10 @@ impl App {
         let mut enc = device.create_command_encoder(&Default::default());
         let mut pass = enc.begin_compute_pass(&Default::default());
         for (image, preprocess_bind_group) in images.iter().zip(&preprocess) {
-            /// Must match `preprocess.wgsl`.
-            const WORKGROUP_SIZE: u32 = 16;
-            let workgroups_x = (image.width() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-            let workgroups_y = (image.height() + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let workgroups_x =
+                (image.width() + PREPROCESS_WORKGROUP_SIZE - 1) / PREPROCESS_WORKGROUP_SIZE;
+            let workgroups_y =
+                (image.height() + PREPROCESS_WORKGROUP_SIZE - 1) / PREPROCESS_WORKGROUP_SIZE;
             pass.set_pipeline(&preprocess_pipeline);
             pass.set_bind_group(0, preprocess_bind_group, &[]);
             pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);

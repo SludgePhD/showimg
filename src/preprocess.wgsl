@@ -24,8 +24,10 @@ struct ImageInfo {
     left: atomic<u32>,
 }
 
+override WORKGROUP_SIZE: u32 = 16;
+
 @compute
-@workgroup_size(16, 16)
+@workgroup_size(WORKGROUP_SIZE, WORKGROUP_SIZE)
 fn preprocess(@builtin(global_invocation_id) gid: vec3u) {
     if any(gid.xy >= textureDimensions(input)) {
         return;
