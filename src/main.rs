@@ -1,3 +1,4 @@
+mod math;
 mod ratio;
 
 use std::{
@@ -17,6 +18,7 @@ use image::{
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
     AnimationDecoder, Delay, Frame, ImageFormat,
 };
+use math::{vec2, vec4, Vec2f, Vec4f};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
@@ -54,7 +56,7 @@ const CHECKERBOARD_LIGHT_B: f32 = 0.95;
 const CHECKERBOARD_DARK_A: f32 = 0.01;
 const CHECKERBOARD_DARK_B: f32 = 0.06;
 
-const SELECTION_COLOR: [f32; 4] = [0.2, 0.5, 0.5, 0.1];
+const SELECTION_COLOR: Vec4f = vec4(0.2, 0.5, 0.5, 0.1);
 
 const SUPPORTED_ALPHA_MODES: &[CompositeAlphaMode] = if cfg!(windows) {
     // On Windows, wgpu only seems to support pre-multiplied alpha with the `Inherit` mode.
@@ -227,8 +229,8 @@ struct App {
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
-    min_uv: [f32; 2],
-    max_uv: [f32; 2],
+    min_uv: Vec2f,
+    max_uv: Vec2f,
     cursor_pos: Option<PhysicalPosition<f64>>, // None = cursor left
     cursor_mode: CursorMode,
     transparency: TransparencyMode,
@@ -537,22 +539,20 @@ impl App {
         let Some(win) = &self.window else { return };
         if win.image_info.top == u32::MAX {
             // Somehow not a single non-transparent pixel in the image? good luck finding the window, fucker
-            self.min_uv = [0.0, 0.0];
-            self.max_uv = [1.0, 1.0];
+            self.min_uv = vec2(0.0, 0.0);
+            self.max_uv = vec2(1.0, 1.0);
             self.aspect_ratio = self.image_aspect_ratio;
         } else {
-            self.min_uv = [
+            self.min_uv = vec2(
                 win.image_info.left as f32 / self.image_width as f32,
                 win.image_info.top as f32 / self.image_height as f32,
-            ];
-            self.max_uv = [
+            );
+            self.max_uv = vec2(
                 (win.image_info.right + 1) as f32 / self.image_width as f32,
                 (win.image_info.bottom + 1) as f32 / self.image_height as f32,
-            ];
-            let range = [
-                self.max_uv[0] - self.min_uv[0],
-                self.max_uv[1] - self.min_uv[1],
-            ];
+            );
+            let range = self.max_uv - self.min_uv;
+
             // UVs always go from 0-1, so their "native" aspect ratio is 1.0.
             self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
         }
@@ -560,7 +560,7 @@ impl App {
         self.enforce_aspect_ratio(win, win.window.inner_size());
     }
 
-    fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> [f32; 2] {
+    fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> Vec2f {
         let (min, max) = self.fb_coord_range(win);
         let mut u = (coords.x as f32 - min[0]) / (max[0] - min[0]);
         let mut v = (coords.y as f32 - min[1]) / (max[1] - min[1]);
@@ -571,10 +571,10 @@ impl App {
         u = (u * u_range) + self.min_uv[0];
         v = (v * v_range) + self.min_uv[1];
 
-        [u, v]
+        vec2(u, v)
     }
 
-    fn selection_region(&self, win: &Win) -> ([f32; 2], [f32; 2]) {
+    fn selection_region(&self, win: &Win) -> (Vec2f, Vec2f) {
         if let (CursorMode::Select(start), Some(end)) = (self.cursor_mode, self.cursor_pos) {
             let start = self.window_to_uv(win, start);
             let end = self.window_to_uv(win, end);
@@ -584,14 +584,14 @@ impl App {
             let max = [f32::max(start[0], end[0]), f32::max(start[1], end[1])];
 
             // clamp to visible area
-            let min = [
+            let min = vec2(
                 f32::max(min[0], self.min_uv[0]),
                 f32::max(min[1], self.min_uv[1]),
-            ];
-            let max = [
+            );
+            let max = vec2(
                 f32::min(max[0], self.max_uv[0]),
                 f32::min(max[1], self.max_uv[1]),
-            ];
+            );
 
             (min, max)
         } else {
@@ -599,7 +599,7 @@ impl App {
         }
     }
 
-    fn fb_coord_range(&self, win: &Win) -> ([f32; 2], [f32; 2]) {
+    fn fb_coord_range(&self, win: &Win) -> (Vec2f, Vec2f) {
         let size = win.window.inner_size();
         let to_aspect = size.width as f32 / size.height as f32;
         let (y_min, x_min, w, h);
@@ -617,20 +617,22 @@ impl App {
             y_min = 0.0;
         }
 
-        ([x_min, y_min], [x_min + w, y_min + h])
+        let min = vec2(x_min, y_min);
+        let max = min + vec2(w, h);
+        (min, max)
     }
 
     fn display_settings(&self, win: &Win) -> DisplaySettings {
         let mut display_settings = DisplaySettings {
-            min_fb: [0.0, 0.0],
-            max_fb: [0.0, 0.0],
+            min_fb: vec2(0.0, 0.0),
+            max_fb: vec2(0.0, 0.0),
             min_uv: self.min_uv,
             max_uv: self.max_uv,
-            min_selection: [0.0, 0.0],
-            max_selection: [0.0, 0.0],
+            min_selection: vec2(0.0, 0.0),
+            max_selection: vec2(0.0, 0.0),
             selection_color: SELECTION_COLOR,
-            checkerboard_a: [0.0; 4],
-            checkerboard_b: [0.0; 4],
+            checkerboard_a: vec4(0.0, 0.0, 0.0, 0.0),
+            checkerboard_b: vec4(0.0, 0.0, 0.0, 0.0),
             checkerboard_res: CHECKERBOARD_CELL_SIZE,
             force_linear: 0,
             padding: Default::default(),
@@ -651,25 +653,25 @@ impl App {
                     // Partially transparent checkerboard while hovered.
                     let a = CHECKERBOARD_LIGHT_A * CHECKERBOARD_HOVER_ALPHA;
                     let b = CHECKERBOARD_LIGHT_B * CHECKERBOARD_HOVER_ALPHA;
-                    display_settings.checkerboard_a = [a, a, a, CHECKERBOARD_HOVER_ALPHA];
-                    display_settings.checkerboard_b = [b, b, b, CHECKERBOARD_HOVER_ALPHA];
+                    display_settings.checkerboard_a = vec4(a, a, a, CHECKERBOARD_HOVER_ALPHA);
+                    display_settings.checkerboard_b = vec4(b, b, b, CHECKERBOARD_HOVER_ALPHA);
                 } else {
                     // Fully transparent.
-                    display_settings.checkerboard_a = [0.0; 4];
-                    display_settings.checkerboard_b = [0.0; 4];
+                    display_settings.checkerboard_a = vec4(0.0, 0.0, 0.0, 0.0);
+                    display_settings.checkerboard_b = vec4(0.0, 0.0, 0.0, 0.0);
                 }
             }
             TransparencyMode::LightCheckerboard => {
                 let a = CHECKERBOARD_LIGHT_A;
                 let b = CHECKERBOARD_LIGHT_B;
-                display_settings.checkerboard_a = [a, a, a, 1.0];
-                display_settings.checkerboard_b = [b, b, b, 1.0];
+                display_settings.checkerboard_a = vec4(a, a, a, 1.0);
+                display_settings.checkerboard_b = vec4(b, b, b, 1.0);
             }
             TransparencyMode::DarkCheckerboard => {
                 let a = CHECKERBOARD_DARK_A;
                 let b = CHECKERBOARD_DARK_B;
-                display_settings.checkerboard_a = [a, a, a, 1.0];
-                display_settings.checkerboard_b = [b, b, b, 1.0];
+                display_settings.checkerboard_a = vec4(a, a, a, 1.0);
+                display_settings.checkerboard_b = vec4(b, b, b, 1.0);
             }
         }
 
@@ -1232,15 +1234,15 @@ impl App {
 #[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 struct DisplaySettings {
-    min_fb: [f32; 2],
-    max_fb: [f32; 2],
-    min_uv: [f32; 2],
-    max_uv: [f32; 2],
-    min_selection: [f32; 2],
-    max_selection: [f32; 2],
-    selection_color: [f32; 4],
-    checkerboard_a: [f32; 4],
-    checkerboard_b: [f32; 4],
+    min_fb: Vec2f,
+    max_fb: Vec2f,
+    min_uv: Vec2f,
+    max_uv: Vec2f,
+    min_selection: Vec2f,
+    max_selection: Vec2f,
+    selection_color: Vec4f,
+    checkerboard_a: Vec4f,
+    checkerboard_b: Vec4f,
     checkerboard_res: u32,
     force_linear: u32,
     padding: [u32; 2],
