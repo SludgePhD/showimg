@@ -1,32 +1,31 @@
-**showimg** is a funny little image viewer / overlay
+# `showimg` – Image Overlay
 
-it displays images without any window decorations and makes them stay on top of
-other windows.
+**showimg** is a funny little image viewer that displays images without any window decorations and makes them stay on top of other windows.
 
-### controls
+### Controls
 
-- escape: close window
-- left mouse button: move window, or resize it at its border
-- right click: open the OS context menu for the window
-- middle click (hold): select a region to zoom into
-- backspace: reset zoom region
-- <kbd>1</kbd>: resize window to match image size exactly
-- <kbd>T</kbd>: toggle window background for transparent images (transparent, light checkerboard, dark checkerboard)
-- <kbd>L</kbd>: force linear interpolation even when each image pixel is larger than a screen pixel (by default, this transitions to pixel art friendly nearest-neighbor)
+- Left Click: Move window, or resize it at its border
+- Right Click: Open the OS context menu for the window
+- Middle Click (hold): Select a region to zoom into
+- <kbd>ESC</kbd>: Close window
+- <kbd>Backspace</kbd>: Reset zoom region
+- <kbd>1</kbd>: Resize window to match image size exactly
+- <kbd>T</kbd>: Toggle window background for transparent images (transparent, light checkerboard, dark checkerboard)
+- <kbd>L</kbd>: Force linear interpolation even when each image pixel is larger than a screen pixel (by default, this transitions to pixel art friendly nearest-neighbor)
 
-### dependencies
+### Dependencies
 
-on Linux, we (apparently!) need [`zenity`]. your distro should have it packaged.
+On Linux, we (apparently!) need [`zenity`]. your distro should have it packaged.
 
 [`zenity`]: https://gitlab.gnome.org/GNOME/zenity
 
-### bugs & todos
+### Limitations
 
-- test aspect-aware window resize logic on native X11 (doesn't work on XWayland) and Windows
-- mipmaps and SPD
-- HDR support? (I have no use for this, I neither have HDR images nor monitors)
-- Ctrl + Drag should create a Drag&Drop source containing the image path (needs winit support first)
+- On Wayland, the window will not automatically stay on top of others.
+  - Depending on your Wayland compositor, you can manually add a window rule that makes this work (eg. on KDE).
+- On XWayland, the window cannot force its size to the image's aspect ratio, so there will be a transparent border if the aspect ratio doesn't match.
+- No support for HDR images.
 
-### license
+### License
 
 https://github.com/SludgePhD/showimg/assets/96552222/b7c4d9ec-18f1-4a3d-9827-4522a84ce1b2
