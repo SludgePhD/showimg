@@ -128,7 +128,14 @@ fn run() -> anyhow::Result<()> {
             }
         }
         ImageFormat::Gif => GifDecoder::new(reader)?.into_frames().collect_frames()?,
-        ImageFormat::WebP => WebPDecoder::new(reader)?.into_frames().collect_frames()?,
+        ImageFormat::WebP => {
+            let dec = WebPDecoder::new(reader)?;
+            if dec.has_animation() {
+                dec.into_frames().collect_frames()?
+            } else {
+                vec![Frame::new(image::open(path)?.into_rgba8())]
+            }
+        }
         _ => vec![Frame::new(image::open(path)?.into_rgba8())],
     };
     assert!(!frames.is_empty());
