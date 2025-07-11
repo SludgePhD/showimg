@@ -7,7 +7,7 @@
 - Left Click: Move window, or resize it at its border
 - Right Click: Open the OS context menu for the window
 - Middle Click (hold): Select a region to zoom into
-- <kbd>ESC</kbd>: Close window
+- <kbd>ESC</kbd> or <kbd>Q</kbd>: Close window
 - <kbd>Backspace</kbd>: Reset zoom region
 - <kbd>1</kbd>: Resize window to match image size exactly
 - <kbd>T</kbd>: Toggle window background for transparent images (transparent, light checkerboard, dark checkerboard)

@@ -443,8 +443,8 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => match code {
-                KeyCode::Escape => {
-                    log::info!("escape pressed -> exiting");
+                KeyCode::Escape | KeyCode::KeyQ => {
+                    log::info!("{code:?} pressed -> exiting");
                     event_loop.exit();
                 }
                 KeyCode::Backspace => {
