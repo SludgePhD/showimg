@@ -770,17 +770,20 @@ impl App {
         };
 
         // Open GPU.
-        let adapter =
-            pollster::block_on(self.instance.request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                power_preference: wgpu::PowerPreference::LowPower, // no need to spin up a dGPU for this workload
-                ..Default::default()
-            }));
+        let res = pollster::block_on(self.instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            power_preference: wgpu::PowerPreference::LowPower, // no need to spin up a dGPU for this workload
+            ..Default::default()
+        }));
 
-        let Some(adapter) = adapter else {
-            eprintln!("could not open any compatible graphics device");
-            process::exit(1);
+        let adapter = match res {
+            Ok(adapter) => adapter,
+            Err(e) => {
+                eprintln!("could not open any compatible graphics device: {e}");
+                process::exit(1);
+            }
         };
+
         let info = adapter.get_info();
         log::info!(
             "using {} via {} ({}) [api={}]",
@@ -833,14 +836,11 @@ impl App {
             ));
         }
 
-        let res = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                required_limits: wgpu::Limits::default().using_resolution(limits),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                ..Default::default()
-            },
-            None,
-        ));
+        let res = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits::default().using_resolution(limits),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            ..Default::default()
+        }));
         let (device, queue) = match res {
             Ok((dev, q)) => (dev, q),
             Err(e) => {
@@ -917,11 +917,7 @@ impl App {
                 }),
                 entry_point: Some("preprocess"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "WORKGROUP_SIZE".to_string(),
-                        PREPROCESS_WORKGROUP_SIZE as f64,
-                    )]
-                    .into(),
+                    constants: &[("WORKGROUP_SIZE", PREPROCESS_WORKGROUP_SIZE as f64)],
                     zero_initialize_workgroup_memory: false,
                 },
                 cache: None,
@@ -1085,9 +1081,7 @@ impl App {
         image_info_dl
             .slice(..)
             .map_async(wgpu::MapMode::Read, Result::unwrap);
-        device
-            .poll(wgpu::Maintain::wait_for(idx))
-            .panic_on_timeout();
+        device.poll(wgpu::PollType::wait_for(idx)).unwrap();
 
         let image_info: ImageInfo =
             *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
@@ -1224,6 +1218,7 @@ impl App {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             ..Default::default()
         });

@@ -53,7 +53,7 @@ fn vertex(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fragment(in: VertexOutput) -> @location(0) vec4f {
     // FB coords of this fragment.
     let fb = in.position.xy;
-    let border = any(fb < u.min_fb || fb >= u.max_fb);
+    let border = any(fb < u.min_fb | fb >= u.max_fb);
 
     var uv = (fb - u.min_fb) / (u.max_fb - u.min_fb);
 
