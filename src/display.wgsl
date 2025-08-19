@@ -23,6 +23,7 @@ struct DisplaySettings {
     // width/height of each checkerboard square in output pixels
     checkerboard_res: u32,
     force_linear: u32, // 0 = smart filtering, 1 = always use linear filtering
+    use_mipmaps: u32, // 0 = always show largest mip, 1 = auto
 }
 
 const MIN_SMOOTHNESS: f32 = 0.25;
@@ -88,7 +89,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4f {
         uv = (floor(px) + fract) / dim;
     }
 
-    let tex_color = select(textureSample(in_texture, in_sampler, uv), vec4(0.0), border);
+    let bias = select(-16.0, 0.0, u.use_mipmaps != 0);
+    let tex_color = select(textureSampleBias(in_texture, in_sampler, uv, bias), vec4(0.0), border);
 
     // do a pre-multiplied alpha blend with the checkerboard colors
     let checkervec = vec2u(in.position.xy) / u.checkerboard_res % 2; // even/odd in x/y dir

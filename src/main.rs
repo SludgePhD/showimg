@@ -5,6 +5,7 @@ use std::{
     cmp, env,
     fs::{self, File},
     io::BufReader,
+    iter::zip,
     mem,
     path::Path,
     process,
@@ -171,6 +172,25 @@ fn run() -> anyhow::Result<()> {
         (image.width() * image.height() * 4) / 1024,
         frames.len(),
     );
+
+    let extent = wgpu::Extent3d {
+        width: image_width,
+        height: image_height,
+        depth_or_array_layers: 1,
+    };
+    let mips = (0..extent.max_mips(wgpu::TextureDimension::D2))
+        .map(|lvl| {
+            let mipext = extent.mip_level_size(lvl, wgpu::TextureDimension::D2);
+            format!(
+                "{}{}x{}",
+                if lvl == 0 { "" } else { ", " },
+                mipext.width,
+                mipext.height,
+            )
+        })
+        .collect::<String>();
+    log::debug!("mipmap sizes: {mips}");
+
     let mut images = Vec::new();
     let mut delays = Vec::new();
     for frame in frames {
@@ -242,6 +262,7 @@ struct App {
     cursor_mode: CursorMode,
     transparency: TransparencyMode,
     filter: FilterMode,
+    no_mipmaps: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -463,7 +484,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     };
-                    log::debug!("T -> cycling transparency mode to {:?}", self.transparency);
+                    log::info!("T -> cycling transparency mode to {:?}", self.transparency);
                     win.window.request_redraw();
                 }
                 KeyCode::KeyL => {
@@ -471,7 +492,15 @@ impl ApplicationHandler for App {
                         FilterMode::Smart => FilterMode::Linear,
                         FilterMode::Linear => FilterMode::Smart,
                     };
-                    log::debug!("L -> cycling filter mode to {:?}", self.filter);
+                    log::info!("L -> cycling filter mode to {:?}", self.filter);
+                    win.window.request_redraw();
+                }
+                KeyCode::KeyM => {
+                    self.no_mipmaps = !self.no_mipmaps;
+                    log::info!(
+                        "M -> {}using mipmaps",
+                        if self.no_mipmaps { "not " } else { "" },
+                    );
                     win.window.request_redraw();
                 }
                 KeyCode::Digit1 => {
@@ -642,6 +671,7 @@ impl App {
             checkerboard_b: vec4(0.0, 0.0, 0.0, 0.0),
             checkerboard_res: CHECKERBOARD_CELL_SIZE,
             force_linear: 0,
+            use_mipmaps: 1,
             padding: Default::default(),
         };
 
@@ -686,6 +716,7 @@ impl App {
             FilterMode::Smart => display_settings.force_linear = 0,
             FilterMode::Linear => display_settings.force_linear = 1,
         }
+        display_settings.use_mipmaps = (!self.no_mipmaps) as u32;
 
         display_settings
     }
@@ -864,6 +895,7 @@ impl App {
             contents: bytemuck::bytes_of(&ImageInfo::default()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
+        const PREPROCESS_WORKGROUP_SIZE: u32 = 16;
         let preprocess_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
@@ -899,11 +931,9 @@ impl App {
                 },
             ],
         });
-
-        const PREPROCESS_WORKGROUP_SIZE: u32 = 16;
         let preprocess_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
+                label: Some("preprocess-pipeline"),
                 layout: Some(
                     &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: None,
@@ -918,6 +948,54 @@ impl App {
                 entry_point: Some("preprocess"),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &[("WORKGROUP_SIZE", PREPROCESS_WORKGROUP_SIZE as f64)],
+                    zero_initialize_workgroup_memory: false,
+                },
+                cache: None,
+            });
+
+        const MIPMAP_WORKGROUP_SIZE: u32 = 16;
+        let downsample_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: TEXTURE_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let downsample_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("mipmap-pipeline"),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &[&downsample_bgl],
+                        push_constant_ranges: &[],
+                    }),
+                ),
+                module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("downsample.wgsl"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("downsample.wgsl").into()),
+                }),
+                entry_point: None,
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("WORKGROUP_SIZE", MIPMAP_WORKGROUP_SIZE as f64)],
                     zero_initialize_workgroup_memory: false,
                 },
                 cache: None,
@@ -964,6 +1042,7 @@ impl App {
         // Upload and preprocess frames.
         let mut display_bind_groups = Vec::new();
         let mut preprocess = Vec::new();
+        let mut downsample = Vec::new();
         for image in &images {
             let size = wgpu::Extent3d {
                 width: image.width(),
@@ -995,7 +1074,7 @@ impl App {
             let output_texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size,
-                mip_level_count: 1,
+                mip_level_count: size.max_mips(wgpu::TextureDimension::D2),
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: TEXTURE_FORMAT,
@@ -1014,9 +1093,12 @@ impl App {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &output_texture.create_view(&Default::default()),
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&output_texture.create_view(
+                            &wgpu::TextureViewDescriptor {
+                                mip_level_count: Some(1),
+                                ..Default::default()
+                            },
+                        )),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -1050,20 +1132,63 @@ impl App {
                     },
                 ],
             });
-
             display_bind_groups.push(display_bind_group);
+
+            let mut downsample_bgs = Vec::new();
+            for src_mip in 0..size.max_mips(wgpu::TextureDimension::D2) - 1 {
+                downsample_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &downsample_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(
+                                &output_texture.create_view(&wgpu::TextureViewDescriptor {
+                                    base_mip_level: src_mip,
+                                    mip_level_count: Some(1),
+                                    ..Default::default()
+                                }),
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &output_texture.create_view(&wgpu::TextureViewDescriptor {
+                                    base_mip_level: src_mip + 1,
+                                    mip_level_count: Some(1),
+                                    ..Default::default()
+                                }),
+                            ),
+                        },
+                    ],
+                }));
+            }
+            downsample.push(downsample_bgs);
         }
 
         let mut enc = device.create_command_encoder(&Default::default());
         let mut pass = enc.begin_compute_pass(&Default::default());
-        for (image, preprocess_bind_group) in images.iter().zip(&preprocess) {
+        for (image, (preprocess_bg, downsample_bg)) in zip(&images, zip(&preprocess, &downsample)) {
             let workgroups_x =
                 (image.width() + PREPROCESS_WORKGROUP_SIZE - 1) / PREPROCESS_WORKGROUP_SIZE;
             let workgroups_y =
                 (image.height() + PREPROCESS_WORKGROUP_SIZE - 1) / PREPROCESS_WORKGROUP_SIZE;
             pass.set_pipeline(&preprocess_pipeline);
-            pass.set_bind_group(0, preprocess_bind_group, &[]);
+            pass.set_bind_group(0, preprocess_bg, &[]);
             pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+
+            if !downsample_bg.is_empty() {
+                let workgroups_x =
+                    (image.width() + MIPMAP_WORKGROUP_SIZE - 1) / MIPMAP_WORKGROUP_SIZE;
+                let workgroups_y =
+                    (image.height() + MIPMAP_WORKGROUP_SIZE - 1) / MIPMAP_WORKGROUP_SIZE;
+
+                pass.set_pipeline(&downsample_pipeline);
+                for bg in downsample_bg {
+                    pass.set_bind_group(0, bg, &[]);
+                    pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+                }
+            }
         }
         drop(pass);
 
@@ -1076,6 +1201,7 @@ impl App {
         });
         enc.copy_buffer_to_buffer(&image_info, 0, &image_info_dl, 0, image_info.size());
 
+        let now = Instant::now();
         let idx = queue.submit([enc.finish()]);
 
         image_info_dl
@@ -1085,6 +1211,7 @@ impl App {
 
         let image_info: ImageInfo =
             *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
+        log::info!("preprocessing completed in {:?}", now.elapsed());
 
         log::debug!(
             "left={} top={} right={} bottom={}",
@@ -1247,7 +1374,8 @@ struct DisplaySettings {
     checkerboard_b: Vec4f,
     checkerboard_res: u32,
     force_linear: u32,
-    padding: [u32; 2],
+    use_mipmaps: u32,
+    padding: [u32; 1],
 }
 
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
