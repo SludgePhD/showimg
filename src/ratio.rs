@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{dpi::PhysicalSize, window::Window};
 
-pub fn enforce(win: &Window, aspect_ratio: f32, _size: PhysicalSize<u32>) {
+pub fn enforce(win: &dyn Window, aspect_ratio: f32, _size: PhysicalSize<u32>) {
     let Ok(wh) = win.window_handle() else { return };
     let Ok(dh) = win.display_handle() else { return };
     match (wh.as_raw(), dh.as_raw()) {

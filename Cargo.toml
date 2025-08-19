@@ -8,13 +8,19 @@ log = "0.4.21"
 env_logger = { version = "0.11.3", default-features = false, features = ["auto-color"] }
 rfd = "0.15.2"
 
-# turn off wayland CSDs since we don't use them
-winit = { version = "0.30.0", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 wgpu = "26.0.1"
 raw-window-handle = "0.6.1"
 image = "0.25.5"
 pollster = "0.4.0"
 bytemuck = { version = "1.0.0", features = ["derive"] }
+
+[dependencies.winit]
+# git commit includes support for toplevel_icon
+git = "https://github.com/rust-windowing/winit.git"
+rev = "d6f7a28499ef59c04980022567ca608fa82a24dd"
+# turn off wayland CSDs since we don't use them
+default-features = false
+features = ["x11", "wayland", "wayland-dlopen"]
 
 # cfg predicate copied from winit
 [target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies]

@@ -5,7 +5,7 @@ use std::{
     cmp, env,
     fs::{self, File},
     io::BufReader,
-    iter::zip,
+    iter::{repeat, zip},
     mem,
     path::Path,
     process,
@@ -22,16 +22,18 @@ use image::{
 use math::{vec2, vec4, Vec2f, Vec4f};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
+    util::{BufferInitDescriptor, DeviceExt, TextureBlitter},
     CompositeAlphaMode,
 };
 use winit::{
     application::ApplicationHandler,
+    cursor::CursorIcon,
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
+    event::{ButtonSource, ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    icon::RgbaIcon,
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel},
+    window::{ResizeDirection, Window, WindowAttributes, WindowId, WindowLevel},
 };
 
 const WIN_WIDTH: u32 = 1280;
@@ -228,7 +230,7 @@ fn run() -> anyhow::Result<()> {
 struct Win {
     supports_alpha: bool,
     image_info: ImageInfo,
-    window: Arc<Window>,
+    window: Arc<Box<dyn Window>>,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -248,7 +250,7 @@ struct App {
     aspect_ratio: f32,       // selection aspect ratio
     /// Frame data; cleared during startup.
     images: Vec<image::RgbaImage>,
-    delays: Option<(EventLoopProxy<()>, Vec<Delay>)>,
+    delays: Option<(EventLoopProxy, Vec<Delay>)>,
     image_width: u32,
     image_height: u32,
     frame_index: usize,
@@ -289,7 +291,7 @@ enum FilterMode {
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_none() {
             let images = mem::take(&mut self.images);
             let win = self.create_window(event_loop, images);
@@ -310,7 +312,7 @@ impl ApplicationHandler for App {
                     log::debug!("starting animation thread");
                     for delay in delays.iter().cycle() {
                         thread::sleep(Duration::from(*delay));
-                        let Ok(()) = proxy.send_event(()) else { break };
+                        proxy.wake_up();
                         window.request_redraw();
                     }
                 });
@@ -318,14 +320,14 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    fn proxy_wake_up(&mut self, _event_loop: &dyn ActiveEventLoop) {
         // The animation thread sends a user event every time the current frame's delay expires.
         self.frame_index = (self.frame_index + 1) % self.frame_count;
     }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
@@ -335,7 +337,7 @@ impl ApplicationHandler for App {
         }
 
         match event {
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 // When the window is resized, we force it to have the same aspect ratio as the
                 // image it is displaying.
                 log::trace!("resized to {}x{}", size.width, size.height);
@@ -344,9 +346,9 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.redraw(win);
             }
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button: ButtonSource::Mouse(MouseButton::Left),
                 ..
             } => match self.cursor_mode {
                 CursorMode::Move => {
@@ -361,8 +363,8 @@ impl ApplicationHandler for App {
                 }
                 CursorMode::Select(_) => {}
             },
-            WindowEvent::MouseInput {
-                button: MouseButton::Middle,
+            WindowEvent::PointerButton {
+                button: ButtonSource::Mouse(MouseButton::Middle),
                 state,
                 ..
             } => match state {
@@ -391,33 +393,32 @@ impl ApplicationHandler for App {
                             let min = [f64::min(start.x, end.x), f64::min(start.y, end.y)];
                             let max = [f64::max(start.x, end.x), f64::max(start.y, end.y)];
                             let size = [max[0] - min[0], max[1] - min[1]];
-                            let _ = win.window.request_inner_size(PhysicalSize::new(
-                                size[0] as u32,
-                                size[1] as u32,
-                            ));
+                            let _ = win.window.request_surface_size(
+                                PhysicalSize::new(size[0] as u32, size[1] as u32).into(),
+                            );
                         }
                     }
 
                     self.cursor_mode = CursorMode::Move;
                     self.update_cursor();
-                    self.enforce_aspect_ratio(win, win.window.inner_size());
+                    self.enforce_aspect_ratio(win, win.window.surface_size());
                     win.window.request_redraw();
                 }
             },
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Released,
-                button: MouseButton::Right,
+                button: ButtonSource::Mouse(MouseButton::Right),
                 ..
             } => {
                 if let Some(pos) = self.cursor_pos {
-                    win.window.show_window_menu(pos);
+                    win.window.show_window_menu(pos.into());
                 }
             }
-            WindowEvent::CursorLeft { .. } => {
+            WindowEvent::PointerLeft { .. } => {
                 self.cursor_pos = None;
                 win.window.request_redraw();
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::PointerMoved { position, .. } => {
                 self.cursor_pos = Some(position);
                 win.window.request_redraw();
 
@@ -426,7 +427,7 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                let inner_size = win.window.inner_size().cast::<f64>();
+                let inner_size = win.window.surface_size().cast::<f64>();
                 let (n, e, s, w) = (
                     position.y <= RESIZE_BORDER_WIDTH,
                     position.x >= inner_size.width - RESIZE_BORDER_WIDTH,
@@ -507,10 +508,9 @@ impl ApplicationHandler for App {
                     // Set the window size to the exact size of the view.
                     let width = (self.max_uv[0] - self.min_uv[0]) * self.image_width as f32;
                     let height = width / self.aspect_ratio;
-                    let _ = win.window.request_inner_size(PhysicalSize::new(
-                        width.round() as u32,
-                        height.round() as u32,
-                    ));
+                    let _ = win.window.request_surface_size(
+                        PhysicalSize::new(width.round() as u32, height.round() as u32).into(),
+                    );
                     self.recreate_swapchain(win);
                     win.window.request_redraw();
                 }
@@ -533,7 +533,7 @@ impl App {
             CursorMode::Resize(dir) => CursorIcon::from(dir),
             CursorMode::Select(_) => CursorIcon::Crosshair,
         };
-        win.window.set_cursor(cursor);
+        win.window.set_cursor(cursor.into());
     }
 
     fn enforce_aspect_ratio(&self, win: &Win, size: PhysicalSize<u32>) {
@@ -562,10 +562,10 @@ impl App {
             fitted_size.height,
         );
 
-        ratio::enforce(&win.window, self.aspect_ratio, size);
+        ratio::enforce(&**win.window, self.aspect_ratio, size);
 
         if fitted_size != size {
-            let _ = win.window.request_inner_size(fitted_size);
+            let _ = win.window.request_surface_size(fitted_size.into());
         }
         self.recreate_swapchain(win);
         win.window.request_redraw();
@@ -593,7 +593,7 @@ impl App {
             self.aspect_ratio = self.image_aspect_ratio * (range[0] / range[1]);
         }
 
-        self.enforce_aspect_ratio(win, win.window.inner_size());
+        self.enforce_aspect_ratio(win, win.window.surface_size());
     }
 
     fn window_to_uv(&self, win: &Win, coords: PhysicalPosition<f64>) -> Vec2f {
@@ -636,7 +636,7 @@ impl App {
     }
 
     fn fb_coord_range(&self, win: &Win) -> (Vec2f, Vec2f) {
-        let size = win.window.inner_size();
+        let size = win.window.surface_size();
         let to_aspect = size.width as f32 / size.height as f32;
         let (y_min, x_min, w, h);
         if self.aspect_ratio > to_aspect {
@@ -721,7 +721,11 @@ impl App {
         display_settings
     }
 
-    fn create_window(&self, event_loop: &ActiveEventLoop, images: Vec<image::RgbaImage>) -> Win {
+    fn create_window(
+        &self,
+        event_loop: &dyn ActiveEventLoop,
+        images: Vec<image::RgbaImage>,
+    ) -> Win {
         // Compute initial window size; fit aspect ratio.
         let s1 = PhysicalSize::new(
             (WIN_HEIGHT as f32 * self.image_aspect_ratio).round() as u32,
@@ -751,8 +755,8 @@ impl App {
         // Create Window.
         let app_name = env!("CARGO_PKG_NAME");
         let res = event_loop.create_window(
-            Window::default_attributes()
-                .with_inner_size(size)
+            WindowAttributes::default()
+                .with_surface_size(size)
                 .with_title(format!("{} – {app_name}", self.title))
                 .with_transparent(true)
                 .with_decorations(false)
@@ -1040,6 +1044,7 @@ impl App {
         });
 
         // Upload and preprocess frames.
+        let mut icon = None;
         let mut display_bind_groups = Vec::new();
         let mut preprocess = Vec::new();
         let mut downsample = Vec::new();
@@ -1164,6 +1169,27 @@ impl App {
                 }));
             }
             downsample.push(downsample_bgs);
+
+            if icon.is_none() {
+                // Pick a mipmap of this image to use as the window / task bar icon.
+                const ICON_SIZE: u32 = 64 * 64;
+                let mut pick = 0;
+                let mut mipsize = size;
+                for lvl in 0..size.max_mips(wgpu::TextureDimension::D2) {
+                    let mipext = size.mip_level_size(lvl, wgpu::TextureDimension::D2);
+                    if mipext.width * mipext.height >= ICON_SIZE {
+                        pick = lvl;
+                        mipsize = mipext;
+                    }
+                }
+
+                let view = output_texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: pick,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                });
+                icon = Some((view, mipsize));
+            }
         }
 
         let mut enc = device.create_command_encoder(&Default::default());
@@ -1192,6 +1218,50 @@ impl App {
         }
         drop(pass);
 
+        let (icon, iconsize) = icon.expect("failed to pick a mipmap as window icon");
+        // Blit the window icon mipmap to an RGBA8 texture and copy to RAM.
+        let icon_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            mip_level_count: 1,
+            sample_count: 1,
+            size: wgpu::Extent3d {
+                width: iconsize.width,
+                height: iconsize.height,
+                depth_or_array_layers: 1,
+            },
+            view_formats: &[],
+        });
+        TextureBlitter::new(&device, icon_texture.format()).copy(
+            &device,
+            &mut enc,
+            &icon,
+            &icon_texture.create_view(&Default::default()),
+        );
+
+        let bytes_per_row =
+            (icon.texture().width() * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let icon_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(iconsize.height) * u64::from(bytes_per_row),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            icon_texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &icon_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            icon_texture.size(),
+        );
+
         // Copy the computed image information to a staging buffer.
         let image_info_dl = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1207,10 +1277,51 @@ impl App {
         image_info_dl
             .slice(..)
             .map_async(wgpu::MapMode::Read, Result::unwrap);
+        icon_buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, Result::unwrap);
         device.poll(wgpu::PollType::wait_for(idx)).unwrap();
 
         let image_info: ImageInfo =
             *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
+
+        let mut icon_data = icon_buffer.slice(..).get_mapped_range().to_vec();
+        // Remove the bytes-per-row padding.
+        for y in (0..iconsize.height).rev() {
+            let row_start = (y * bytes_per_row) as usize;
+            let next_row_start = ((y + 1) * bytes_per_row) as usize;
+            icon_data.splice(row_start + iconsize.width as usize * 4..next_row_start, []);
+        }
+        let bytes_per_row = iconsize.width * 4;
+        if icon_texture.height() > icon_texture.width() {
+            // Pad lines.
+            let padl = (icon_texture.height() - icon_texture.width()).div_ceil(2);
+            let padr = (icon_texture.height() - icon_texture.width()) / 2;
+            for y in (0..iconsize.height).rev() {
+                let row_start = (y * bytes_per_row) as usize;
+                let row_end = ((y + 1) * bytes_per_row) as usize;
+                icon_data.splice(row_end..row_end, repeat(0).take(padr as usize * 4));
+                icon_data.splice(row_start..row_start, repeat(0).take(padl as usize * 4));
+            }
+        }
+        if icon_texture.width() > icon_texture.height() {
+            let pad0 = (icon_texture.width() - icon_texture.height()).div_ceil(2);
+            let pad1 = (icon_texture.width() - icon_texture.height()) / 2;
+            icon_data.extend(repeat(0).take((pad0 * icon_texture.width() * 4) as usize));
+            icon_data.splice(
+                0..0,
+                repeat(0).take((pad1 * icon_texture.width() * 4) as usize),
+            );
+        }
+
+        let size = cmp::max(icon_texture.height(), icon_texture.width());
+        match RgbaIcon::new(icon_data, size, size) {
+            Ok(icon) => window.set_window_icon(Some(icon.into())),
+            Err(e) => {
+                log::error!("failed to create window icon from mipmap: {e}");
+            }
+        }
+
         log::info!("preprocessing completed in {:?}", now.elapsed());
 
         log::debug!(
@@ -1286,7 +1397,7 @@ impl App {
     }
 
     fn recreate_swapchain(&self, win: &Win) {
-        let res = win.window.inner_size();
+        let res = win.window.surface_size();
 
         let caps = win.surface.get_capabilities(&win.adapter);
         let mut config = win
