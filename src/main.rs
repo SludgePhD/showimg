@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alerta::Icon;
 use anyhow::{bail, Context};
 use image::{
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
@@ -86,11 +87,12 @@ fn main() {
 
 fn exit_with_error(error: String) -> ! {
     eprintln!("Error: {error:#}");
-    rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title(concat!(env!("CARGO_PKG_NAME"), " – error"))
-        .set_description(format!("{error:#}"))
-        .show();
+    alerta::alerta()
+        .icon(Icon::Error)
+        .title(concat!(env!("CARGO_PKG_NAME"), " – error"))
+        .message(format!("{error:#}"))
+        .show()
+        .unwrap();
     process::exit(1);
 }
 
