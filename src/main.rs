@@ -3,10 +3,11 @@ mod ratio;
 
 use std::{
     cmp, env,
-    fs::{self, File},
-    io::BufReader,
+    fs::File,
+    io::{stdin, BufRead, BufReader, Seek, SeekFrom},
     iter::{repeat, zip},
     mem,
+    os::fd::AsFd,
     path::Path,
     process,
     sync::Arc,
@@ -15,10 +16,10 @@ use std::{
 };
 
 use alerta::Icon;
-use anyhow::{bail, Context};
+use anyhow::bail;
 use image::{
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
-    AnimationDecoder, Delay, Frame, ImageFormat,
+    AnimationDecoder, Delay, Frame, ImageBuffer, ImageDecoder, ImageFormat, Rgba,
 };
 use math::{vec2, vec4, Vec2f, Vec4f};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -113,35 +114,40 @@ fn run() -> anyhow::Result<()> {
         ),
     };
 
-    log::info!("opening '{}'", path.display());
-    let metadata =
-        fs::metadata(path).context(format!("Failed to open image file '{}'", path.display()))?;
-    let kb = metadata.len() / 1024;
+    let file = if path == "-" {
+        let owned_fd = stdin().as_fd().try_clone_to_owned()?;
+        File::from(owned_fd)
+    } else {
+        log::info!("opening '{}'", path.display());
+        File::open(path)?
+    };
 
     let start = Instant::now();
-    let reader = BufReader::new(File::open(path)?);
-    let format = ImageFormat::from_path(path)?;
+    let mut reader = BufReader::new(file);
+    reader.fill_buf()?;
+    let format = ImageFormat::from_path(path).or_else(|_| {
+        image::guess_format(reader.buffer()).inspect(|f| log::info!("guessed format: {f:?}"))
+    })?;
     let frames = match format {
         ImageFormat::Png => {
-            let dec = PngDecoder::new(reader)?;
+            let dec = PngDecoder::new(&mut reader)?;
             if dec.is_apng()? {
                 dec.apng()?.into_frames().collect_frames()?
             } else {
-                // It's awkward to get a normal fucking image from a `PngDecoder` for some reason,
-                // so just use the `image::load` API.
-                vec![Frame::new(image::open(path)?.into_rgba8())]
+                let (width, height) = dec.dimensions();
+                let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width, height);
+                dec.read_image(&mut image)?;
+                vec![Frame::new(image)]
             }
         }
-        ImageFormat::Gif => GifDecoder::new(reader)?.into_frames().collect_frames()?,
+        ImageFormat::Gif => GifDecoder::new(&mut reader)?
+            .into_frames()
+            .collect_frames()?,
         ImageFormat::WebP => {
-            let dec = WebPDecoder::new(reader)?;
-            if dec.has_animation() {
-                dec.into_frames().collect_frames()?
-            } else {
-                vec![Frame::new(image::open(path)?.into_rgba8())]
-            }
+            let dec = WebPDecoder::new(&mut reader)?;
+            dec.into_frames().collect_frames()?
         }
-        _ => vec![Frame::new(image::open(path)?.into_rgba8())],
+        _ => vec![Frame::new(image::load(&mut reader, format)?.into_rgba8())],
     };
     assert!(!frames.is_empty());
 
@@ -157,6 +163,10 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    let input = match reader.into_inner().seek(SeekFrom::Current(0)) {
+        Ok(pos) => format!("{} KiB input", pos / 1024),
+        Err(_) => "input stream".into(),
+    };
     let what = if frames.len() == 1 {
         "image"
     } else {
@@ -167,10 +177,9 @@ fn run() -> anyhow::Result<()> {
     let image_height = image.height();
     let image_aspect_ratio = image_width as f32 / image_height as f32;
     log::debug!(
-        "loaded {}x{} {what} from {} KiB file in {:.02?} (aspect ratio {}; memsize {} KiB per frame; {} frames)",
+        "loaded {}x{} {what} from {input} in {:.02?} (aspect ratio {}; memsize {} KiB per frame; {} frames)",
         image.width(),
         image.height(),
-        kb,
         start.elapsed(),
         image_aspect_ratio,
         (image.width() * image.height() * 4) / 1024,
