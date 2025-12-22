@@ -899,7 +899,7 @@ impl App {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -951,9 +951,8 @@ impl App {
                 label: Some("preprocess-pipeline"),
                 layout: Some(
                     &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: None,
                         bind_group_layouts: &[&preprocess_bgl],
-                        push_constant_ranges: &[],
+                        ..Default::default()
                     }),
                 ),
                 module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -999,9 +998,8 @@ impl App {
                 label: Some("mipmap-pipeline"),
                 layout: Some(
                     &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: None,
                         bind_group_layouts: &[&downsample_bgl],
-                        push_constant_ranges: &[],
+                        ..Default::default()
                     }),
                 ),
                 module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1291,7 +1289,12 @@ impl App {
         icon_buffer
             .slice(..)
             .map_async(wgpu::MapMode::Read, Result::unwrap);
-        device.poll(wgpu::PollType::wait_for(idx)).unwrap();
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(idx),
+                timeout: None,
+            })
+            .unwrap();
 
         let image_info: ImageInfo =
             *bytemuck::from_bytes(&image_info_dl.slice(..).get_mapped_range());
@@ -1364,9 +1367,8 @@ impl App {
             label: None,
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
                     bind_group_layouts: &[&display_bgl],
-                    push_constant_ranges: &[],
+                    ..Default::default()
                 }),
             ),
             vertex: wgpu::VertexState {
@@ -1387,7 +1389,7 @@ impl App {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState::from(surface_format))],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
