@@ -11,7 +11,6 @@ use std::{
     path::Path,
     process,
     sync::Arc,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -31,8 +30,8 @@ use winit::{
     application::ApplicationHandler,
     cursor::CursorIcon,
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{ButtonSource, ElementState, KeyEvent, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    event::{ButtonSource, ElementState, KeyEvent, MouseButton, StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     icon::RgbaIcon,
     keyboard::{KeyCode, PhysicalKey},
     window::{ResizeDirection, Window, WindowAttributes, WindowId, WindowLevel},
@@ -217,22 +216,31 @@ fn run() -> anyhow::Result<()> {
     };
 
     let event_loop = EventLoop::builder().build()?;
-    let proxy = event_loop.create_proxy();
 
     event_loop.run_app(&mut App {
-        frame_count: images.len(),
-        image_aspect_ratio,
         image_width,
         image_height,
+        image_aspect_ratio,
+        aspect_ratio: image_aspect_ratio,
+        frame_index: 0,
+        frame_count: images.len(),
         images,
-        delays: Some((proxy, delays)),
+        delays,
+        last_frame: Instant::now(),
         title: title.into(),
         instance: wgpu::Instance::new(&wgpu::InstanceDescriptor {
             // Disable the OpenGL backend. It causes crashes even when not used.
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         }),
-        ..App::default()
+        window: None,
+        min_uv: Default::default(),
+        max_uv: Default::default(),
+        cursor_pos: None,
+        cursor_mode: Default::default(),
+        transparency: Default::default(),
+        filter: Default::default(),
+        no_mipmaps: false,
     })?;
 
     Ok(())
@@ -255,17 +263,17 @@ struct Win {
     display_bind_groups: Vec<wgpu::BindGroup>,
 }
 
-#[derive(Default)]
 struct App {
+    image_width: u32,
+    image_height: u32,
     image_aspect_ratio: f32, // full image aspect ratio; never changes
     aspect_ratio: f32,       // selection aspect ratio
     /// Frame data; cleared during startup.
     images: Vec<image::RgbaImage>,
-    delays: Option<(EventLoopProxy, Vec<Delay>)>,
-    image_width: u32,
-    image_height: u32,
+    delays: Vec<Delay>,
     frame_index: usize,
     frame_count: usize,
+    last_frame: Instant,
     title: String,
     instance: wgpu::Instance,
     window: Option<Win>,
@@ -309,31 +317,37 @@ impl ApplicationHandler for App {
             if !win.supports_alpha {
                 self.transparency = TransparencyMode::LightCheckerboard;
             }
-            let window = win.window.clone();
             self.window = Some(win);
 
             self.reset_region();
-
-            if let Some((proxy, delays)) = mem::take(&mut self.delays) {
-                if delays.len() <= 1 {
-                    return;
-                }
-
-                thread::spawn(move || {
-                    log::debug!("starting animation thread");
-                    for delay in delays.iter().cycle() {
-                        thread::sleep(Duration::from(*delay));
-                        proxy.wake_up();
-                        window.request_redraw();
-                    }
-                });
-            }
         }
     }
 
-    fn proxy_wake_up(&mut self, _event_loop: &dyn ActiveEventLoop) {
-        // The animation thread sends a user event every time the current frame's delay expires.
-        self.frame_index = (self.frame_index + 1) % self.frame_count;
+    fn new_events(&mut self, _event_loop: &dyn ActiveEventLoop, cause: StartCause) {
+        let Some(win) = &self.window else {
+            return;
+        };
+        match cause {
+            StartCause::ResumeTimeReached { start, .. }
+            | StartCause::WaitCancelled { start, .. }
+                if self.delays.len() > 1 =>
+            {
+                let delay = Duration::from(self.delays[self.frame_index]);
+                if start > self.last_frame + delay {
+                    self.frame_index = (self.frame_index + 1) % self.frame_count;
+                    self.last_frame = self.last_frame + delay;
+                    win.window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.delays.len() > 1 {
+            let delay = Duration::from(self.delays[self.frame_index]);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_frame + delay));
+        }
     }
 
     fn window_event(
