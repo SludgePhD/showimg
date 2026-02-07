@@ -247,6 +247,8 @@ fn run() -> anyhow::Result<()> {
         transparency: Default::default(),
         filter: Default::default(),
         no_mipmaps: false,
+        hflip: false,
+        vflip: false,
     })?;
 
     Ok(())
@@ -290,6 +292,8 @@ struct App {
     transparency: TransparencyMode,
     filter: FilterMode,
     no_mipmaps: bool,
+    hflip: bool,
+    vflip: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -535,6 +539,14 @@ impl ApplicationHandler for App {
                     );
                     win.window.request_redraw();
                 }
+                KeyCode::KeyH => {
+                    self.hflip = !self.hflip;
+                    win.window.request_redraw();
+                }
+                KeyCode::KeyV => {
+                    self.vflip = !self.vflip;
+                    win.window.request_redraw();
+                }
                 KeyCode::Digit1 => {
                     // Set the window size to the exact size of the view.
                     let width = (self.max_uv[0] - self.min_uv[0]) * self.image_width as f32;
@@ -705,6 +717,19 @@ impl App {
             use_mipmaps: 1,
             padding: Default::default(),
         };
+
+        if self.hflip {
+            mem::swap(
+                &mut display_settings.min_uv[0],
+                &mut display_settings.max_uv[0],
+            );
+        }
+        if self.vflip {
+            mem::swap(
+                &mut display_settings.min_uv[1],
+                &mut display_settings.max_uv[1],
+            );
+        }
 
         let (min, max) = self.fb_coord_range(win);
 

@@ -10,6 +10,8 @@
 - <kbd>ESC</kbd> or <kbd>Q</kbd>: Close window
 - <kbd>Backspace</kbd>: Reset zoom region
 - <kbd>1</kbd>: Resize window to match image size exactly
+- <kbd>H</kbd>: Flip horizontally
+- <kbd>V</kbd>: Flip vertically
 - <kbd>T</kbd>: Toggle window background for transparent images (transparent, light checkerboard, dark checkerboard)
 - <kbd>L</kbd>: Force linear interpolation even when each image pixel is larger than a screen pixel (by default, this transitions to pixel art friendly nearest-neighbor)
 - <kbd>M</kbd>: Toggle the use of mipmaps
