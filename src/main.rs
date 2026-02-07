@@ -18,7 +18,7 @@ use alerta::Icon;
 use anyhow::bail;
 use image::{
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
-    AnimationDecoder, Delay, Frame, ImageBuffer, ImageDecoder, ImageFormat, Rgba,
+    AnimationDecoder, Delay, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat, Rgba,
 };
 use math::{vec2, vec4, Vec2f, Vec4f};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -144,7 +144,13 @@ fn run() -> anyhow::Result<()> {
             .collect_frames()?,
         ImageFormat::WebP => {
             let dec = WebPDecoder::new(&mut reader)?;
-            dec.into_frames().collect_frames()?
+            if dec.has_animation() {
+                dec.into_frames().collect_frames()?
+            } else {
+                // `into_frames()` yields an empty iterator when there is no animation,
+                // so we have to read the data ourselves.
+                vec![Frame::new(DynamicImage::from_decoder(dec)?.into())]
+            }
         }
         _ => vec![Frame::new(image::load(&mut reader, format)?.into_rgba8())],
     };
