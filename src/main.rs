@@ -18,7 +18,7 @@ use alerta::Icon;
 use anyhow::bail;
 use image::{
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
-    AnimationDecoder, Delay, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat, Rgba,
+    AnimationDecoder, Delay, DynamicImage, Frame, ImageFormat,
 };
 use math::{vec2, vec4, Vec2f, Vec4f};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -128,27 +128,22 @@ fn run() -> anyhow::Result<()> {
         image::guess_format(reader.buffer()).inspect(|f| log::info!("guessed format: {f:?}"))
     })?;
     let frames = match format {
+        ImageFormat::Gif => GifDecoder::new(&mut reader)?
+            .into_frames()
+            .collect_frames()?,
         ImageFormat::Png => {
             let dec = PngDecoder::new(&mut reader)?;
             if dec.is_apng()? {
                 dec.apng()?.into_frames().collect_frames()?
             } else {
-                let (width, height) = dec.dimensions();
-                let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width, height);
-                dec.read_image(&mut image)?;
-                vec![Frame::new(image)]
+                vec![Frame::new(DynamicImage::from_decoder(dec)?.into())]
             }
         }
-        ImageFormat::Gif => GifDecoder::new(&mut reader)?
-            .into_frames()
-            .collect_frames()?,
         ImageFormat::WebP => {
             let dec = WebPDecoder::new(&mut reader)?;
             if dec.has_animation() {
                 dec.into_frames().collect_frames()?
             } else {
-                // `into_frames()` yields an empty iterator when there is no animation,
-                // so we have to read the data ourselves.
                 vec![Frame::new(DynamicImage::from_decoder(dec)?.into())]
             }
         }
