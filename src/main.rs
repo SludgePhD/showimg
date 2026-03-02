@@ -34,6 +34,7 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     icon::RgbaIcon,
     keyboard::{KeyCode, PhysicalKey},
+    platform::startup_notify::EventLoopExtStartupNotify,
     window::{ResizeDirection, Window, WindowAttributes, WindowId, WindowLevel},
 };
 
@@ -805,14 +806,33 @@ impl App {
 
         // Create Window.
         let app_name = env!("CARGO_PKG_NAME");
-        let res = event_loop.create_window(
-            WindowAttributes::default()
-                .with_surface_size(size)
-                .with_title(format!("{} – {app_name}", self.title))
-                .with_transparent(true)
-                .with_decorations(false)
-                .with_window_level(WindowLevel::AlwaysOnTop), // NB: doesn't work on Wayland
-        );
+        let mut attrs = WindowAttributes::default()
+            .with_surface_size(size)
+            .with_title(format!("{} – {app_name}", self.title))
+            .with_transparent(true)
+            .with_decorations(false)
+            .with_window_level(WindowLevel::AlwaysOnTop); // NB: doesn't work on Wayland
+
+        #[cfg(unix)]
+        if let Some(token) = event_loop.read_token_from_env() {
+            use winit::platform::wayland::ActiveEventLoopExtWayland;
+
+            if event_loop.is_wayland() {
+                use winit::platform::wayland::WindowAttributesWayland;
+
+                attrs = attrs.with_platform_attributes(Box::new(
+                    WindowAttributesWayland::default().with_activation_token(token),
+                ));
+            } else {
+                use winit::platform::x11::WindowAttributesX11;
+
+                attrs = attrs.with_platform_attributes(Box::new(
+                    WindowAttributesX11::default().with_activation_token(token),
+                ));
+            }
+        }
+
+        let res = event_loop.create_window(attrs);
         let window = match res {
             Ok(win) => Arc::new(win),
             Err(e) => {
