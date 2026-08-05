@@ -28,7 +28,3 @@ On Linux, we (apparently!) need [`zenity`]. your distro should have it packaged.
   - Depending on your Wayland compositor, you can manually add a window rule that makes this work (eg. on KDE).
 - On XWayland, the window cannot force its size to the image's aspect ratio, so there will be a transparent border if the aspect ratio doesn't match.
 - No support for HDR images.
-
-### License
-
-https://github.com/SludgePhD/showimg/assets/96552222/b7c4d9ec-18f1-4a3d-9827-4522a84ce1b2
